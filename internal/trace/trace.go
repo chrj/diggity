@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"sort"
-	"strings"
 
 	"github.com/miekg/dns"
 
@@ -56,7 +55,7 @@ type Hop struct {
 // Walk performs an iterative resolution for name starting from the bundled
 // root hints and returns every hop. It stops at the first AA response, when
 // a referral dead-ends, or after maxHops to avoid loops.
-func Walk(ctx context.Context, r resolver.Client, name string) []Hop {
+func Walk(ctx context.Context, r resolver.Querier, name string) []Hop {
 	target := dns.Fqdn(name)
 
 	type srv struct {
@@ -116,16 +115,12 @@ func Walk(ctx context.Context, r resolver.Client, name string) []Hop {
 			hop.Referral = nsRecs[0].Hdr.Name
 		}
 
-		glueMap := map[string][]net.IP{}
+		glueMap := dnsutil.AdditionalIPs(msg)
 		for _, rr := range msg.Extra {
 			switch x := rr.(type) {
 			case *dns.A:
-				k := strings.ToLower(x.Hdr.Name)
-				glueMap[k] = append(glueMap[k], x.A)
 				hop.Glue = append(hop.Glue, fmt.Sprintf("%s A %s", dnsutil.TrimDot(x.Hdr.Name), x.A))
 			case *dns.AAAA:
-				k := strings.ToLower(x.Hdr.Name)
-				glueMap[k] = append(glueMap[k], x.AAAA)
 				hop.Glue = append(hop.Glue, fmt.Sprintf("%s AAAA %s", dnsutil.TrimDot(x.Hdr.Name), x.AAAA))
 			}
 		}
@@ -140,22 +135,14 @@ func Walk(ctx context.Context, r resolver.Client, name string) []Hop {
 			break
 		}
 
-		var next []srv
+		var nsHosts []string
 		for _, ns := range nsRecs {
-			key := strings.ToLower(ns.Ns)
-			if ips, ok := glueMap[key]; ok {
-				for _, ip := range ips {
-					next = append(next, srv{name: ns.Ns, addr: net.JoinHostPort(ip.String(), "53")})
-				}
-				continue
-			}
-			ips, err := dnsutil.ResolveIPs(ctx, r, ns.Ns)
-			if err != nil {
-				continue
-			}
-			for _, ip := range ips {
-				next = append(next, srv{name: ns.Ns, addr: net.JoinHostPort(ip.String(), "53")})
-			}
+			nsHosts = append(nsHosts, ns.Ns)
+		}
+		targets, _ := dnsutil.ResolveNameServerTargets(ctx, r, nsHosts, glueMap)
+		var next []srv
+		for _, target := range targets {
+			next = append(next, srv{name: target.Host, addr: target.Addr})
 		}
 		if len(next) == 0 {
 			break

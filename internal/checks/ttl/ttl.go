@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/chrj/diggity/internal/check"
+	"github.com/chrj/diggity/internal/dnsutil"
 	"github.com/chrj/diggity/internal/resolver"
 )
 
@@ -28,8 +29,8 @@ var defaultTypes = []uint16{dns.TypeSOA, dns.TypeNS, dns.TypeA, dns.TypeAAAA, dn
 // Run samples TTLs for SOA, NS, A, AAAA, MX (plus any opts.ExtraTypes) at
 // hostname. Findings warn when a TTL falls outside [opts.Min, opts.Max] or
 // when sibling RRs disagree on TTL.
-func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts Options) check.Result {
-	res := check.Result{Check: Name, Hostname: hostname}
+func Run(ctx context.Context, r resolver.RecursiveQuerier, hostname string, opts Options) check.Result {
+	res := check.NewResult(Name, hostname)
 
 	types := append([]uint16(nil), defaultTypes...)
 	for _, t := range opts.ExtraTypes {
@@ -97,15 +98,14 @@ func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts 
 		})
 	}
 
-	res.Status = check.Aggregate(res.Findings)
-	return res
+	return check.Finalize(res, res.Findings)
 }
 
 // sampleTTLs returns the TTLs found for qt at hostname. It first looks at
 // the answer section; if empty, it falls back to records of the same type
 // in the authority section (useful for SOA / NS at non-apex names, where
 // the SOA's TTL represents the negative-caching TTL).
-func sampleTTLs(ctx context.Context, r resolver.RecursiveClient, hostname string, qt uint16) ([]uint32, string, error) {
+func sampleTTLs(ctx context.Context, r resolver.RecursiveQuerier, hostname string, qt uint16) ([]uint32, string, error) {
 	msg, err := r.Resolve(ctx, hostname, qt)
 	if err != nil {
 		return nil, "", err
@@ -113,24 +113,15 @@ func sampleTTLs(ctx context.Context, r resolver.RecursiveClient, hostname string
 	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
 		return nil, "", fmt.Errorf("rcode %s", dns.RcodeToString[msg.Rcode])
 	}
-	var out []uint32
-	for _, rr := range msg.Answer {
-		if rr.Header().Rrtype == qt {
-			out = append(out, rr.Header().Ttl)
-		}
+	rrs, fromAuthority := dnsutil.AnswerOrAuthorityRecords(msg, qt)
+	if len(rrs) == 0 {
+		return nil, "", nil
 	}
-	if len(out) > 0 {
+	out := dnsutil.RecordTTLs(rrs)
+	if !fromAuthority {
 		return out, "", nil
 	}
-	for _, rr := range msg.Ns {
-		if rr.Header().Rrtype == qt {
-			out = append(out, rr.Header().Ttl)
-		}
-	}
-	if len(out) > 0 {
-		return out, " (negative cache)", nil
-	}
-	return nil, "", nil
+	return out, " (negative cache)", nil
 }
 
 func uniqueSorted(ttls []uint32) []uint32 {

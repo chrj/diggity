@@ -32,19 +32,6 @@ func TestStripPorts(t *testing.T) {
 	}
 }
 
-func TestSkipped(t *testing.T) {
-	t.Parallel()
-
-	got := skipped("dnssec", "example.com")
-
-	if got.Check != "dnssec" || got.Hostname != "example.com" || got.Status != check.StatusSkip {
-		t.Fatalf("skipped() = %#v", got)
-	}
-	if len(got.Findings) != 1 || got.Findings[0].Message != "skipped" || got.Findings[0].Status != check.StatusSkip {
-		t.Fatalf("skipped findings = %#v", got.Findings)
-	}
-}
-
 func TestNewRootCmdRequiresHostname(t *testing.T) {
 	t.Parallel()
 
@@ -124,7 +111,7 @@ func TestBuildReportAndRunWithResolver(t *testing.T) {
 		r,
 		runtimeDeps{
 			errOut: &errOut,
-			walk: func(_ context.Context, _ resolver.Client, host string) []trace.Hop {
+			walk: func(_ context.Context, _ resolver.Querier, host string) []trace.Hop {
 				walked = append(walked, host)
 				return []trace.Hop{{}}
 			},

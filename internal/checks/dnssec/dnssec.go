@@ -39,8 +39,8 @@ var deprecatedDigestTypes = map[uint8]string{
 }
 
 // Run validates the DNSSEC chain of trust for hostname's zone.
-func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts Options) check.Result {
-	res := check.Result{Check: Name, Hostname: hostname}
+func Run(ctx context.Context, r resolver.RecursiveQuerier, hostname string, opts Options) check.Result {
+	res := check.NewResult(Name, hostname)
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
 	if err != nil {
@@ -63,9 +63,7 @@ func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts 
 		parentKeys = levelKeys
 	}
 
-	res.Findings = findings
-	res.Status = check.Aggregate(findings)
-	return res
+	return check.Finalize(res, findings)
 }
 
 // zoneChain returns the list of zones to validate, from root down to zone.
@@ -93,14 +91,14 @@ func zoneChain(zone string) []string {
 //     the next level
 //   - signed:   false if this zone is unsigned (chain stops here, pass)
 //   - halt:     true on a fatal verification error (chain stops here, fail)
-func validateLevel(ctx context.Context, r resolver.RecursiveClient, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+func validateLevel(ctx context.Context, r resolver.RecursiveQuerier, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
 	if zone == "." {
 		return validateRootLevel(ctx, r, opts)
 	}
 	return validateSignedLevel(ctx, r, zone, parentKeys, opts)
 }
 
-func validateRootLevel(ctx context.Context, r resolver.RecursiveClient, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+func validateRootLevel(ctx context.Context, r resolver.RecursiveQuerier, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
 	label := zoneLabel(".")
 
 	// Fetch root DNSKEY and match against bundled trust anchors.
@@ -136,7 +134,7 @@ func validateRootLevel(ctx context.Context, r resolver.RecursiveClient, opts Opt
 	return findings, keys, true, false
 }
 
-func validateSignedLevel(ctx context.Context, r resolver.RecursiveClient, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+func validateSignedLevel(ctx context.Context, r resolver.RecursiveQuerier, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
 	label := zoneLabel(zone)
 	var findings []check.Finding
 
@@ -221,7 +219,7 @@ func validateSignedLevel(ctx context.Context, r resolver.RecursiveClient, zone s
 	return findings, keys, true, false
 }
 
-func fetchDNSKEY(ctx context.Context, r resolver.RecursiveClient, zone string) ([]*dns.DNSKEY, []*dns.RRSIG, error) {
+func fetchDNSKEY(ctx context.Context, r resolver.RecursiveQuerier, zone string) ([]*dns.DNSKEY, []*dns.RRSIG, error) {
 	rrs, sigs, err := fetchSet(ctx, r, zone, dns.TypeDNSKEY)
 	if err != nil {
 		return nil, nil, err
@@ -235,7 +233,7 @@ func fetchDNSKEY(ctx context.Context, r resolver.RecursiveClient, zone string) (
 	return keys, sigs, nil
 }
 
-func fetchDS(ctx context.Context, r resolver.RecursiveClient, zone string) ([]*dns.DS, []*dns.RRSIG, error) {
+func fetchDS(ctx context.Context, r resolver.RecursiveQuerier, zone string) ([]*dns.DS, []*dns.RRSIG, error) {
 	rrs, sigs, err := fetchSet(ctx, r, zone, dns.TypeDS)
 	if err != nil {
 		return nil, nil, err
@@ -249,11 +247,11 @@ func fetchDS(ctx context.Context, r resolver.RecursiveClient, zone string) ([]*d
 	return ds, sigs, nil
 }
 
-func fetchSOA(ctx context.Context, r resolver.RecursiveClient, zone string) ([]dns.RR, []*dns.RRSIG, error) {
+func fetchSOA(ctx context.Context, r resolver.RecursiveQuerier, zone string) ([]dns.RR, []*dns.RRSIG, error) {
 	return fetchSet(ctx, r, zone, dns.TypeSOA)
 }
 
-func fetchSet(ctx context.Context, r resolver.RecursiveClient, name string, qtype uint16) ([]dns.RR, []*dns.RRSIG, error) {
+func fetchSet(ctx context.Context, r resolver.RecursiveQuerier, name string, qtype uint16) ([]dns.RR, []*dns.RRSIG, error) {
 	msg, err := r.Resolve(ctx, name, qtype)
 	if err != nil {
 		return nil, nil, err
@@ -261,17 +259,13 @@ func fetchSet(ctx context.Context, r resolver.RecursiveClient, name string, qtyp
 	if msg.Rcode != dns.RcodeSuccess {
 		return nil, nil, fmt.Errorf("rcode %s", dns.RcodeToString[msg.Rcode])
 	}
-	var rrs []dns.RR
+	rrs := dnsutil.AnswerRecords(msg, qtype)
 	var sigs []*dns.RRSIG
 	for _, rr := range msg.Answer {
 		if sig, ok := rr.(*dns.RRSIG); ok {
 			if sig.TypeCovered == qtype {
 				sigs = append(sigs, sig)
 			}
-			continue
-		}
-		if rr.Header().Rrtype == qtype {
-			rrs = append(rrs, rr)
 		}
 	}
 	return rrs, sigs, nil

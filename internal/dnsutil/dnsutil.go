@@ -16,7 +16,7 @@ import (
 // configured recursive resolver for SOA. The SOA is found either in the
 // answer section (when name is the apex) or the authority section (when
 // name is below the apex).
-func FindZone(ctx context.Context, r resolver.RecursiveClient, name string) (string, error) {
+func FindZone(ctx context.Context, r resolver.RecursiveQuerier, name string) (string, error) {
 	msg, err := r.Resolve(ctx, dns.Fqdn(name), dns.TypeSOA)
 	if err != nil {
 		return "", err
@@ -24,15 +24,8 @@ func FindZone(ctx context.Context, r resolver.RecursiveClient, name string) (str
 	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
 		return "", fmt.Errorf("rcode %s", dns.RcodeToString[msg.Rcode])
 	}
-	for _, rr := range msg.Answer {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
-	}
-	for _, rr := range msg.Ns {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
+	if soa := FirstSOA(msg); soa != nil {
+		return soa.Hdr.Name, nil
 	}
 	return "", fmt.Errorf("no SOA in response")
 }
@@ -63,21 +56,13 @@ func TrimDot(s string) string {
 // ResolveIPs returns every A and AAAA address for host via the recursive
 // resolver. Errors from either query are absorbed; only an empty result is
 // reported.
-func ResolveIPs(ctx context.Context, r resolver.RecursiveClient, host string) ([]net.IP, error) {
+func ResolveIPs(ctx context.Context, r resolver.RecursiveQuerier, host string) ([]net.IP, error) {
 	var ips []net.IP
 	if msg, err := r.Resolve(ctx, TrimDot(host), dns.TypeA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.A); ok {
-				ips = append(ips, a.A)
-			}
-		}
+		ips = append(ips, AnswerIPs(msg, dns.TypeA)...)
 	}
 	if msg, err := r.Resolve(ctx, TrimDot(host), dns.TypeAAAA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.AAAA); ok {
-				ips = append(ips, a.AAAA)
-			}
-		}
+		ips = append(ips, AnswerIPs(msg, dns.TypeAAAA)...)
 	}
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("no A/AAAA for %s", host)

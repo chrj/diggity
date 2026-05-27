@@ -1,12 +1,14 @@
 package consistency
 
 import (
+	"net"
 	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
 
 	"github.com/chrj/diggity/internal/check"
+	"github.com/chrj/diggity/internal/dnsutil"
 )
 
 func TestCanonicalNamesAndIPs(t *testing.T) {
@@ -25,13 +27,13 @@ func TestCanonicalNamesAndIPs(t *testing.T) {
 		},
 	}
 
-	if got, want := canonicalNames(msg, dns.TypeNS), "a.example.com.,b.example.com."; got != want {
+	if got, want := canonicalNames(dnsutil.NSHostnames(msg)), "a.example.com.,b.example.com."; got != want {
 		t.Fatalf("canonicalNames() = %q, want %q", got, want)
 	}
-	if got, want := canonicalIPs(msg, dns.TypeA), "192.0.2.1,192.0.2.10"; got != want {
+	if got, want := canonicalIPs(dnsutil.AnswerIPs(msg, dns.TypeA)), "192.0.2.1,192.0.2.10"; got != want {
 		t.Fatalf("canonicalIPs(A) = %q, want %q", got, want)
 	}
-	if got, want := canonicalIPs(msg, dns.TypeAAAA), "2001:db8::1"; got != want {
+	if got, want := canonicalIPs([]net.IP{net.ParseIP("2001:db8::1")}), "2001:db8::1"; got != want {
 		t.Fatalf("canonicalIPs(AAAA) = %q, want %q", got, want)
 	}
 }

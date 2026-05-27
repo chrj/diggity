@@ -18,8 +18,8 @@ import (
 const Name = "delegation"
 
 // Run performs the delegation check for hostname using r.
-func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
-	res := check.Result{Check: Name, Hostname: hostname}
+func Run(ctx context.Context, r resolver.Querier, hostname string) check.Result {
+	res := check.NewResult(Name, hostname)
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
 	if err != nil {
@@ -31,9 +31,13 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 		return check.Fail(res, fmt.Sprintf("%s has no parent zone (cannot check delegation of the root)", dnsutil.TrimDot(zone)))
 	}
 
-	parentServers, err := authoritativeAddrs(ctx, r, parent)
+	parentTargets, err := dnsutil.AuthoritativeTargets(ctx, r, parent)
 	if err != nil {
 		return check.Fail(res, fmt.Sprintf("could not resolve authoritative servers for %s: %v", dnsutil.TrimDot(parent), err))
+	}
+	parentServers := make([]string, 0, len(parentTargets))
+	for _, target := range parentTargets {
+		parentServers = append(parentServers, target.Addr)
 	}
 
 	parentSide, glue, err := referral(ctx, r, parentServers, zone)
@@ -47,30 +51,12 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 	var findings []check.Finding
 
 	// Resolve each parent-side NS to one or more IPs. Prefer glue when present.
-	type target struct {
-		host string
-		ip   net.IP
-		glue bool
-	}
-	var targets []target
-	for _, ns := range parentSide {
-		if ips, ok := glue[strings.ToLower(ns)]; ok && len(ips) > 0 {
-			for _, ip := range ips {
-				targets = append(targets, target{host: ns, ip: ip, glue: true})
-			}
-			continue
-		}
-		ips, err := dnsutil.ResolveIPs(ctx, r, ns)
-		if err != nil || len(ips) == 0 {
-			findings = append(findings, check.Finding{
-				Status:  check.StatusFail,
-				Message: fmt.Sprintf("NS %s has no A/AAAA records", dnsutil.TrimDot(ns)),
-			})
-			continue
-		}
-		for _, ip := range ips {
-			targets = append(targets, target{host: ns, ip: ip})
-		}
+	targets, unresolved := dnsutil.ResolveNameServerTargets(ctx, r, parentSide, glue)
+	for _, ns := range unresolved {
+		findings = append(findings, check.Finding{
+			Status:  check.StatusFail,
+			Message: fmt.Sprintf("NS %s has no A/AAAA records", dnsutil.TrimDot(ns)),
+		})
 	}
 
 	// Query each target for the zone's NS records (and SOA over TCP for
@@ -78,10 +64,9 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 	childSets := map[string][]string{}
 	serials := map[string]uint32{}
 	for _, t := range targets {
-		label := fmt.Sprintf("%s/%s", dnsutil.TrimDot(t.host), t.ip)
-		srv := net.JoinHostPort(t.ip.String(), "53")
+		label := fmt.Sprintf("%s/%s", dnsutil.TrimDot(t.Host), t.IP)
 
-		nsMsg, err := r.Query(ctx, srv, dnsutil.TrimDot(zone), dns.TypeNS)
+		nsMsg, err := r.Query(ctx, t.Addr, dnsutil.TrimDot(zone), dns.TypeNS)
 		if err != nil {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusFail,
@@ -102,16 +87,11 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 				Message: fmt.Sprintf("%s did not set AA bit (lame delegation)", label),
 			})
 		}
-		var hosts []string
-		for _, rr := range nsMsg.Answer {
-			if n, ok := rr.(*dns.NS); ok {
-				hosts = append(hosts, strings.ToLower(dns.Fqdn(n.Ns)))
-			}
-		}
+		hosts := normaliseSet(dnsutil.NSHostnames(nsMsg))
 		sort.Strings(hosts)
 		childSets[label] = hosts
 
-		soaMsg, err := r.QueryTCP(ctx, srv, dnsutil.TrimDot(zone), dns.TypeSOA)
+		soaMsg, err := r.QueryTCP(ctx, t.Addr, dnsutil.TrimDot(zone), dns.TypeSOA)
 		if err != nil {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusFail,
@@ -126,11 +106,8 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 			})
 			continue
 		}
-		for _, rr := range soaMsg.Answer {
-			if soa, ok := rr.(*dns.SOA); ok {
-				serials[label] = soa.Serial
-				break
-			}
+		if soa := dnsutil.FirstSOA(soaMsg); soa != nil {
+			serials[label] = soa.Serial
 		}
 	}
 
@@ -202,57 +179,14 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 		}
 	}
 
-	res.Findings = findings
-	res.Status = check.Aggregate(findings)
-	return res
-}
-
-func authoritativeAddrs(ctx context.Context, r resolver.Client, zone string) ([]string, error) {
-	msg, err := r.Resolve(ctx, dnsutil.TrimDot(zone), dns.TypeNS)
-	if err != nil {
-		return nil, err
-	}
-	if msg.Rcode != dns.RcodeSuccess {
-		return nil, fmt.Errorf("NS query rcode %s", dns.RcodeToString[msg.Rcode])
-	}
-	var hosts []string
-	for _, rr := range msg.Answer {
-		if ns, ok := rr.(*dns.NS); ok {
-			hosts = append(hosts, ns.Ns)
-		}
-	}
-	if len(hosts) == 0 {
-		for _, rr := range msg.Ns {
-			if ns, ok := rr.(*dns.NS); ok {
-				hosts = append(hosts, ns.Ns)
-			}
-		}
-	}
-	if len(hosts) == 0 {
-		return nil, fmt.Errorf("no NS for %s", dnsutil.TrimDot(zone))
-	}
-
-	var addrs []string
-	for _, h := range hosts {
-		ips, err := dnsutil.ResolveIPs(ctx, r, h)
-		if err != nil {
-			continue
-		}
-		for _, ip := range ips {
-			addrs = append(addrs, net.JoinHostPort(ip.String(), "53"))
-		}
-	}
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("no NS for %s resolved to an IP", dnsutil.TrimDot(zone))
-	}
-	return addrs, nil
+	return check.Finalize(res, findings)
 }
 
 // referral asks each server in turn for the zone's NS records (RD=0) and
 // returns the first usable response: the parent-side NS hostnames and any
 // glue A/AAAA records present in the additional section, keyed by lowercase
 // owner name.
-func referral(ctx context.Context, r resolver.Client, servers []string, zone string) ([]string, map[string][]net.IP, error) {
+func referral(ctx context.Context, r resolver.Querier, servers []string, zone string) ([]string, map[string][]net.IP, error) {
 	var lastErr error
 	for _, srv := range servers {
 		msg, err := r.Query(ctx, srv, dnsutil.TrimDot(zone), dns.TypeNS)
@@ -264,35 +198,12 @@ func referral(ctx context.Context, r resolver.Client, servers []string, zone str
 			lastErr = fmt.Errorf("%s: rcode %s", srv, dns.RcodeToString[msg.Rcode])
 			continue
 		}
-		var nsHosts []string
-		for _, rr := range msg.Ns {
-			if ns, ok := rr.(*dns.NS); ok {
-				nsHosts = append(nsHosts, ns.Ns)
-			}
-		}
-		if len(nsHosts) == 0 {
-			for _, rr := range msg.Answer {
-				if ns, ok := rr.(*dns.NS); ok {
-					nsHosts = append(nsHosts, ns.Ns)
-				}
-			}
-		}
+		nsHosts := dnsutil.NSHostnames(msg)
 		if len(nsHosts) == 0 {
 			lastErr = fmt.Errorf("%s: no NS records", srv)
 			continue
 		}
-		glue := map[string][]net.IP{}
-		for _, rr := range msg.Extra {
-			switch x := rr.(type) {
-			case *dns.A:
-				k := strings.ToLower(x.Hdr.Name)
-				glue[k] = append(glue[k], x.A)
-			case *dns.AAAA:
-				k := strings.ToLower(x.Hdr.Name)
-				glue[k] = append(glue[k], x.AAAA)
-			}
-		}
-		return nsHosts, glue, nil
+		return nsHosts, dnsutil.AdditionalIPs(msg), nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no servers to query")

@@ -19,67 +19,37 @@ const Name = "consistency"
 
 // Run queries every authoritative NS for SOA, NS, A, and AAAA of hostname
 // and verifies that every server returns identical answers and serials.
-func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
-	res := check.Result{Check: Name, Hostname: hostname}
+func Run(ctx context.Context, r resolver.Querier, hostname string) check.Result {
+	res := check.NewResult(Name, hostname)
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
 	if err != nil {
 		return check.Fail(res, fmt.Sprintf("could not find zone for %s: %v", hostname, err))
 	}
 
-	nsHosts, err := authoritativeNSHosts(ctx, r, zone)
+	nsHosts, err := dnsutil.AuthoritativeNSHosts(ctx, r, zone)
 	if err != nil {
 		return check.Fail(res, fmt.Sprintf("could not list authoritative NS for %s: %v", dnsutil.TrimDot(zone), err))
 	}
 	if len(nsHosts) < 2 {
-		return check.Result{
-			Check:    Name,
-			Hostname: hostname,
-			Status:   check.StatusSkip,
-			Findings: []check.Finding{{
-				Status:  check.StatusSkip,
-				Message: fmt.Sprintf("only %d NS authoritative for %s — nothing to compare", len(nsHosts), dnsutil.TrimDot(zone)),
-			}},
-		}
+		return check.Skip(Name, hostname, fmt.Sprintf("only %d NS authoritative for %s — nothing to compare", len(nsHosts), dnsutil.TrimDot(zone)))
 	}
-
-	type target struct {
-		label  string
-		addr   string
-		family int // 4 or 6 — IP family of the NS address contacted
-	}
-	var targets []target
-	for _, host := range nsHosts {
-		ips, err := dnsutil.ResolveIPs(ctx, r, host)
-		if err != nil {
-			continue
-		}
-		for _, ip := range ips {
-			fam := 4
-			if ip.To4() == nil {
-				fam = 6
-			}
-			targets = append(targets, target{
-				label:  fmt.Sprintf("%s/%s", dnsutil.TrimDot(host), ip),
-				addr:   net.JoinHostPort(ip.String(), "53"),
-				family: fam,
-			})
-		}
-	}
+	targets, _ := dnsutil.ResolveNameServerTargets(ctx, r, nsHosts, nil)
 
 	var findings []check.Finding
 	snapshots := map[string]snapshot{}
 	for _, t := range targets {
-		snap, err := takeSnapshot(ctx, r, t.addr, zone, hostname)
+		label := fmt.Sprintf("%s/%s", dnsutil.TrimDot(t.Host), t.IP)
+		snap, err := takeSnapshot(ctx, r, t.Addr, zone, hostname)
 		if err != nil {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusWarn,
-				Message: fmt.Sprintf("%s excluded from comparison: %v", t.label, err),
+				Message: fmt.Sprintf("%s excluded from comparison: %v", label, err),
 			})
 			continue
 		}
-		snap.family = t.family
-		snapshots[t.label] = snap
+		snap.family = t.Family
+		snapshots[label] = snap
 	}
 
 	if len(snapshots) < 2 {
@@ -87,9 +57,7 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 			Status:  check.StatusFail,
 			Message: fmt.Sprintf("only %d authoritative server(s) usable for comparison", len(snapshots)),
 		})
-		res.Findings = findings
-		res.Status = check.Aggregate(findings)
-		return res
+		return check.Finalize(res, findings)
 	}
 
 	findings = append(findings,
@@ -99,9 +67,7 @@ func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 		compareField(snapshots, fmt.Sprintf("AAAA %s", hostname), func(s snapshot) string { return s.aaaa }),
 	)
 
-	res.Findings = findings
-	res.Status = check.Aggregate(findings)
-	return res
+	return check.Finalize(res, findings)
 }
 
 type snapshot struct {
@@ -115,7 +81,7 @@ type snapshot struct {
 // takeSnapshot queries server for SOA + NS at zone and A + AAAA at hostname.
 // The server must set the AA bit on the SOA response; otherwise the response
 // is not authoritative and the server is excluded from the comparison.
-func takeSnapshot(ctx context.Context, r resolver.Client, server, zone, hostname string) (snapshot, error) {
+func takeSnapshot(ctx context.Context, r resolver.Querier, server, zone, hostname string) (snapshot, error) {
 	var snap snapshot
 
 	soaMsg, err := r.Query(ctx, server, dnsutil.TrimDot(zone), dns.TypeSOA)
@@ -128,59 +94,45 @@ func takeSnapshot(ctx context.Context, r resolver.Client, server, zone, hostname
 	if !soaMsg.Authoritative {
 		return snap, fmt.Errorf("did not set AA bit")
 	}
-	for _, rr := range soaMsg.Answer {
-		if soa, ok := rr.(*dns.SOA); ok {
-			snap.serial = soa.Serial
-			break
-		}
+	if soa := dnsutil.FirstSOA(soaMsg); soa != nil {
+		snap.serial = soa.Serial
 	}
 
 	nsMsg, err := r.Query(ctx, server, dnsutil.TrimDot(zone), dns.TypeNS)
 	if err != nil {
 		return snap, err
 	}
-	snap.ns = canonicalNames(nsMsg, dns.TypeNS)
+	snap.ns = canonicalNames(dnsutil.NSHostnames(nsMsg))
 
 	if aMsg, err := r.Query(ctx, server, hostname, dns.TypeA); err == nil {
-		snap.a = canonicalIPs(aMsg, dns.TypeA)
+		snap.a = canonicalIPs(dnsutil.AnswerIPs(aMsg, dns.TypeA))
 	}
 	if aaaaMsg, err := r.Query(ctx, server, hostname, dns.TypeAAAA); err == nil {
-		snap.aaaa = canonicalIPs(aaaaMsg, dns.TypeAAAA)
+		snap.aaaa = canonicalIPs(dnsutil.AnswerIPs(aaaaMsg, dns.TypeAAAA))
 	}
 
 	return snap, nil
 }
 
-func canonicalNames(msg *dns.Msg, qtype uint16) string {
-	var names []string
-	for _, rr := range msg.Answer {
-		if rr.Header().Rrtype != qtype {
-			continue
-		}
-		if ns, ok := rr.(*dns.NS); ok {
-			names = append(names, strings.ToLower(dns.Fqdn(ns.Ns)))
-		}
+func canonicalNames(names []string) string {
+	names = append([]string(nil), names...)
+	for i, name := range names {
+		names[i] = strings.ToLower(dns.Fqdn(name))
 	}
 	sort.Strings(names)
 	return strings.Join(names, ",")
 }
 
-func canonicalIPs(msg *dns.Msg, qtype uint16) string {
-	var ips []string
-	for _, rr := range msg.Answer {
-		switch x := rr.(type) {
-		case *dns.A:
-			if qtype == dns.TypeA {
-				ips = append(ips, x.A.String())
-			}
-		case *dns.AAAA:
-			if qtype == dns.TypeAAAA {
-				ips = append(ips, x.AAAA.String())
-			}
-		}
+func canonicalIPs(addrs []net.IP) string {
+	if len(addrs) == 0 {
+		return ""
 	}
-	sort.Strings(ips)
-	return strings.Join(ips, ",")
+	var texts []string
+	for _, ip := range addrs {
+		texts = append(texts, ip.String())
+	}
+	sort.Strings(texts)
+	return strings.Join(texts, ",")
 }
 
 func compareField(snapshots map[string]snapshot, fieldName string, getter func(snapshot) string) check.Finding {
@@ -282,24 +234,4 @@ func displayValue(v string) string {
 		return ""
 	}
 	return strings.ReplaceAll(v, ",", ", ")
-}
-
-func authoritativeNSHosts(ctx context.Context, r resolver.Client, zone string) ([]string, error) {
-	msg, err := r.Resolve(ctx, dnsutil.TrimDot(zone), dns.TypeNS)
-	if err != nil {
-		return nil, err
-	}
-	if msg.Rcode != dns.RcodeSuccess {
-		return nil, fmt.Errorf("NS rcode %s", dns.RcodeToString[msg.Rcode])
-	}
-	var hosts []string
-	for _, rr := range msg.Answer {
-		if ns, ok := rr.(*dns.NS); ok {
-			hosts = append(hosts, ns.Ns)
-		}
-	}
-	if len(hosts) == 0 {
-		return nil, fmt.Errorf("no NS records for %s", dnsutil.TrimDot(zone))
-	}
-	return hosts, nil
 }
