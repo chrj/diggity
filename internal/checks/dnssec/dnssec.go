@@ -19,6 +19,7 @@ const Name = "dnssec"
 // Options controls DNSSEC validation behaviour.
 type Options struct {
 	ExpiryWarn time.Duration
+	Now        func() time.Time
 }
 
 // Algorithms whose use in new deployments is forbidden by RFC 8624.
@@ -38,7 +39,7 @@ var deprecatedDigestTypes = map[uint8]string{
 }
 
 // Run validates the DNSSEC chain of trust for hostname's zone.
-func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Options) check.Result {
+func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts Options) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
@@ -92,7 +93,7 @@ func zoneChain(zone string) []string {
 //     the next level
 //   - signed:   false if this zone is unsigned (chain stops here, pass)
 //   - halt:     true on a fatal verification error (chain stops here, fail)
-func validateLevel(ctx context.Context, r *resolver.Resolver, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+func validateLevel(ctx context.Context, r resolver.RecursiveClient, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
 	label := zoneLabel(zone)
 	var findings []check.Finding
 
@@ -213,7 +214,7 @@ func validateLevel(ctx context.Context, r *resolver.Resolver, zone string, paren
 	return findings, keys, true, false
 }
 
-func fetchDNSKEY(ctx context.Context, r *resolver.Resolver, zone string) ([]*dns.DNSKEY, []*dns.RRSIG, error) {
+func fetchDNSKEY(ctx context.Context, r resolver.RecursiveClient, zone string) ([]*dns.DNSKEY, []*dns.RRSIG, error) {
 	rrs, sigs, err := fetchSet(ctx, r, zone, dns.TypeDNSKEY)
 	if err != nil {
 		return nil, nil, err
@@ -227,7 +228,7 @@ func fetchDNSKEY(ctx context.Context, r *resolver.Resolver, zone string) ([]*dns
 	return keys, sigs, nil
 }
 
-func fetchDS(ctx context.Context, r *resolver.Resolver, zone string) ([]*dns.DS, []*dns.RRSIG, error) {
+func fetchDS(ctx context.Context, r resolver.RecursiveClient, zone string) ([]*dns.DS, []*dns.RRSIG, error) {
 	rrs, sigs, err := fetchSet(ctx, r, zone, dns.TypeDS)
 	if err != nil {
 		return nil, nil, err
@@ -241,11 +242,11 @@ func fetchDS(ctx context.Context, r *resolver.Resolver, zone string) ([]*dns.DS,
 	return ds, sigs, nil
 }
 
-func fetchSOA(ctx context.Context, r *resolver.Resolver, zone string) ([]dns.RR, []*dns.RRSIG, error) {
+func fetchSOA(ctx context.Context, r resolver.RecursiveClient, zone string) ([]dns.RR, []*dns.RRSIG, error) {
 	return fetchSet(ctx, r, zone, dns.TypeSOA)
 }
 
-func fetchSet(ctx context.Context, r *resolver.Resolver, name string, qtype uint16) ([]dns.RR, []*dns.RRSIG, error) {
+func fetchSet(ctx context.Context, r resolver.RecursiveClient, name string, qtype uint16) ([]dns.RR, []*dns.RRSIG, error) {
 	msg, err := r.Resolve(ctx, name, qtype)
 	if err != nil {
 		return nil, nil, err
@@ -324,7 +325,7 @@ func verifySignatures(rrset []dns.RR, sigs []*dns.RRSIG, candidates []*dns.DNSKE
 
 func signatureWarnings(sigs []*dns.RRSIG, label string, opts Options) []check.Finding {
 	var findings []check.Finding
-	now := time.Now()
+	now := opts.now()
 	for _, sig := range sigs {
 		exp := time.Unix(int64(sig.Expiration), 0)
 		if exp.Before(now) {
@@ -348,6 +349,13 @@ func signatureWarnings(sigs []*dns.RRSIG, label string, opts Options) []check.Fi
 		}
 	}
 	return findings
+}
+
+func (o Options) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
 }
 
 func dnskeyWarnings(keys []*dns.DNSKEY, label string) []check.Finding {

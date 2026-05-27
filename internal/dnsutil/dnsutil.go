@@ -16,7 +16,7 @@ import (
 // configured recursive resolver for SOA. The SOA is found either in the
 // answer section (when name is the apex) or the authority section (when
 // name is below the apex).
-func FindZone(ctx context.Context, r *resolver.Resolver, name string) (string, error) {
+func FindZone(ctx context.Context, r resolver.RecursiveClient, name string) (string, error) {
 	msg, err := r.Resolve(ctx, dns.Fqdn(name), dns.TypeSOA)
 	if err != nil {
 		return "", err
@@ -63,7 +63,7 @@ func TrimDot(s string) string {
 // ResolveIPs returns every A and AAAA address for host via the recursive
 // resolver. Errors from either query are absorbed; only an empty result is
 // reported.
-func ResolveIPs(ctx context.Context, r *resolver.Resolver, host string) ([]net.IP, error) {
+func ResolveIPs(ctx context.Context, r resolver.RecursiveClient, host string) ([]net.IP, error) {
 	var ips []net.IP
 	if msg, err := r.Resolve(ctx, TrimDot(host), dns.TypeA); err == nil {
 		for _, rr := range msg.Answer {

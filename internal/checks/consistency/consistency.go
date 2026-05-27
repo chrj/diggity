@@ -19,7 +19,7 @@ const Name = "consistency"
 
 // Run queries every authoritative NS for SOA, NS, A, and AAAA of hostname
 // and verifies that every server returns identical answers and serials.
-func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Result {
+func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
@@ -115,7 +115,7 @@ type snapshot struct {
 // takeSnapshot queries server for SOA + NS at zone and A + AAAA at hostname.
 // The server must set the AA bit on the SOA response; otherwise the response
 // is not authoritative and the server is excluded from the comparison.
-func takeSnapshot(ctx context.Context, r *resolver.Resolver, server, zone, hostname string) (snapshot, error) {
+func takeSnapshot(ctx context.Context, r resolver.Client, server, zone, hostname string) (snapshot, error) {
 	var snap snapshot
 
 	soaMsg, err := r.Query(ctx, server, dnsutil.TrimDot(zone), dns.TypeSOA)
@@ -284,7 +284,7 @@ func displayValue(v string) string {
 	return strings.ReplaceAll(v, ",", ", ")
 }
 
-func authoritativeNSHosts(ctx context.Context, r *resolver.Resolver, zone string) ([]string, error) {
+func authoritativeNSHosts(ctx context.Context, r resolver.Client, zone string) ([]string, error) {
 	msg, err := r.Resolve(ctx, dnsutil.TrimDot(zone), dns.TypeNS)
 	if err != nil {
 		return nil, err

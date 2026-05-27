@@ -28,7 +28,7 @@ var defaultTypes = []uint16{dns.TypeSOA, dns.TypeNS, dns.TypeA, dns.TypeAAAA, dn
 // Run samples TTLs for SOA, NS, A, AAAA, MX (plus any opts.ExtraTypes) at
 // hostname. Findings warn when a TTL falls outside [opts.Min, opts.Max] or
 // when sibling RRs disagree on TTL.
-func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Options) check.Result {
+func Run(ctx context.Context, r resolver.RecursiveClient, hostname string, opts Options) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
 	types := append([]uint16(nil), defaultTypes...)
@@ -105,7 +105,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Option
 // the answer section; if empty, it falls back to records of the same type
 // in the authority section (useful for SOA / NS at non-apex names, where
 // the SOA's TTL represents the negative-caching TTL).
-func sampleTTLs(ctx context.Context, r *resolver.Resolver, hostname string, qt uint16) ([]uint32, string, error) {
+func sampleTTLs(ctx context.Context, r resolver.RecursiveClient, hostname string, qt uint16) ([]uint32, string, error) {
 	msg, err := r.Resolve(ctx, hostname, qt)
 	if err != nil {
 		return nil, "", err

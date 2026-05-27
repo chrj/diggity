@@ -40,20 +40,28 @@ func TestZoneChainAndHelpers(t *testing.T) {
 func TestSignatureWarningsAndDNSKEYWarnings(t *testing.T) {
 	t.Parallel()
 
+	now := time.Unix(1_700_000_000, 0).UTC()
+
 	expired := &dns.RRSIG{
 		Algorithm:  5,
-		Expiration: uint32(time.Now().Add(-time.Hour).Unix()),
+		Expiration: uint32(now.Add(-time.Hour).Unix()),
 	}
-	expiredFindings := signatureWarnings([]*dns.RRSIG{expired}, "example.com DNSKEY", Options{ExpiryWarn: 24 * time.Hour})
+	expiredFindings := signatureWarnings([]*dns.RRSIG{expired}, "example.com DNSKEY", Options{
+		ExpiryWarn: 24 * time.Hour,
+		Now:        func() time.Time { return now },
+	})
 	if len(expiredFindings) != 1 || expiredFindings[0].Status != check.StatusFail || !strings.Contains(expiredFindings[0].Message, "expired at") {
 		t.Fatalf("signatureWarnings(expired) = %#v", expiredFindings)
 	}
 
 	soon := &dns.RRSIG{
 		Algorithm:  5,
-		Expiration: uint32(time.Now().Add(2 * time.Hour).Unix()),
+		Expiration: uint32(now.Add(2 * time.Hour).Unix()),
 	}
-	soonFindings := signatureWarnings([]*dns.RRSIG{soon}, "example.com DNSKEY", Options{ExpiryWarn: 24 * time.Hour})
+	soonFindings := signatureWarnings([]*dns.RRSIG{soon}, "example.com DNSKEY", Options{
+		ExpiryWarn: 24 * time.Hour,
+		Now:        func() time.Time { return now },
+	})
 	if len(soonFindings) != 2 {
 		t.Fatalf("signatureWarnings(soon) len = %d, want 2 (%#v)", len(soonFindings), soonFindings)
 	}

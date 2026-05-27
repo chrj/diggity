@@ -18,7 +18,7 @@ import (
 const Name = "delegation"
 
 // Run performs the delegation check for hostname using r.
-func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Result {
+func Run(ctx context.Context, r resolver.Client, hostname string) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
 	zone, err := dnsutil.FindZone(ctx, r, hostname)
@@ -207,7 +207,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 	return res
 }
 
-func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) ([]string, error) {
+func authoritativeAddrs(ctx context.Context, r resolver.Client, zone string) ([]string, error) {
 	msg, err := r.Resolve(ctx, dnsutil.TrimDot(zone), dns.TypeNS)
 	if err != nil {
 		return nil, err
@@ -252,7 +252,7 @@ func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) 
 // returns the first usable response: the parent-side NS hostnames and any
 // glue A/AAAA records present in the additional section, keyed by lowercase
 // owner name.
-func referral(ctx context.Context, r *resolver.Resolver, servers []string, zone string) ([]string, map[string][]net.IP, error) {
+func referral(ctx context.Context, r resolver.Client, servers []string, zone string) ([]string, map[string][]net.IP, error) {
 	var lastErr error
 	for _, srv := range servers {
 		msg, err := r.Query(ctx, srv, dnsutil.TrimDot(zone), dns.TypeNS)

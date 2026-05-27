@@ -23,6 +23,18 @@ import (
 	"github.com/chrj/diggity/internal/version"
 )
 
+type fallbackReporter interface {
+	FallbackInfo() (used bool, from, to []string)
+}
+
+type runResolver interface {
+	resolver.Client
+	fallbackReporter
+}
+
+type traceWalker func(context.Context, resolver.Client, string) []trace.Hop
+type traceRenderer func(io.Writer, string, []trace.Hop)
+
 // Config holds all parsed CLI flags.
 type Config struct {
 	NoDelegation  bool
@@ -149,32 +161,15 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 		IPv6Only:  cfg.IPv6Only,
 		Trace:     cfg.Trace,
 	})
+	return runWithResolver(ctx, out, os.Stderr, cfg, r, trace.Walk, trace.Render)
+}
 
-	if cfg.Trace {
-		for _, host := range cfg.Hostnames {
-			hops := trace.Walk(ctx, r, host)
-			trace.Render(os.Stderr, host, hops)
-		}
+func runWithResolver(ctx context.Context, out, errOut io.Writer, cfg *Config, r runResolver, walk traceWalker, render traceRenderer) error {
+	renderTraces(ctx, errOut, cfg, r, walk, render)
+	report, exitCode, err := buildReport(ctx, r, cfg)
+	if err != nil {
+		return err
 	}
-
-	var report check.Report
-	for _, host := range cfg.Hostnames {
-		report.Results = append(report.Results, runChecks(ctx, r, host, cfg)...)
-	}
-
-	for _, res := range report.Results {
-		switch res.Status {
-		case check.StatusPass:
-			report.Summary.Pass++
-		case check.StatusWarn:
-			report.Summary.Warn++
-		case check.StatusFail:
-			report.Summary.Fail++
-		case check.StatusSkip:
-			report.Summary.Skip++
-		}
-	}
-
 	w, err := output.New(cfg.Output)
 	if err != nil {
 		return &check.ExitError{Code: 3, Err: err}
@@ -186,17 +181,11 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 	if err := w.Write(out, report); err != nil {
 		return err
 	}
-
-	if used, from, to := r.FallbackInfo(); used {
-		fmt.Fprintf(os.Stderr, "diggity: %s refused DNSSEC queries; used %s instead (override with -r)\n",
-			strings.Join(stripPorts(from), ", "), strings.Join(stripPorts(to), ", "))
+	if msg, ok := fallbackMessage(r); ok {
+		fmt.Fprintln(errOut, msg)
 	}
-
-	switch {
-	case report.Summary.Fail > 0:
-		return &check.ExitError{Code: 2}
-	case report.Summary.Warn > 0:
-		return &check.ExitError{Code: 1}
+	if exitCode != 0 {
+		return &check.ExitError{Code: exitCode}
 	}
 	return nil
 }
@@ -213,7 +202,62 @@ func stripPorts(addrs []string) []string {
 	return out
 }
 
-func runChecks(ctx context.Context, r *resolver.Resolver, host string, cfg *Config) []check.Result {
+func buildReport(ctx context.Context, r resolver.Client, cfg *Config) (check.Report, int, error) {
+	var results []check.Result
+	for _, host := range cfg.Hostnames {
+		results = append(results, runChecks(ctx, r, host, cfg)...)
+	}
+	report := reportFromResults(results)
+	return report, exitCodeForReport(report), nil
+}
+
+func reportFromResults(results []check.Result) check.Report {
+	report := check.Report{Results: results}
+	for _, res := range results {
+		switch res.Status {
+		case check.StatusPass:
+			report.Summary.Pass++
+		case check.StatusWarn:
+			report.Summary.Warn++
+		case check.StatusFail:
+			report.Summary.Fail++
+		case check.StatusSkip:
+			report.Summary.Skip++
+		}
+	}
+	return report
+}
+
+func exitCodeForReport(report check.Report) int {
+	switch {
+	case report.Summary.Fail > 0:
+		return 2
+	case report.Summary.Warn > 0:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func renderTraces(ctx context.Context, errOut io.Writer, cfg *Config, r resolver.Client, walk traceWalker, render traceRenderer) {
+	if !cfg.Trace {
+		return
+	}
+	for _, host := range cfg.Hostnames {
+		render(errOut, host, walk(ctx, r, host))
+	}
+}
+
+func fallbackMessage(r fallbackReporter) (string, bool) {
+	used, from, to := r.FallbackInfo()
+	if !used {
+		return "", false
+	}
+	return fmt.Sprintf("diggity: %s refused DNSSEC queries; used %s instead (override with -r)",
+		strings.Join(stripPorts(from), ", "), strings.Join(stripPorts(to), ", ")), true
+}
+
+func runChecks(ctx context.Context, r resolver.Client, host string, cfg *Config) []check.Result {
 	var results []check.Result
 
 	if cfg.NoDelegation {

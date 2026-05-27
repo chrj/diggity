@@ -43,8 +43,8 @@ const maxHops = 16
 
 // Hop is one step in an iterative resolution.
 type Hop struct {
-	ServerName    string   // NS hostname contacted, e.g. "a.root-servers.net."
-	ServerAddr    string   // IP:port we contacted, e.g. "198.41.0.4:53"
+	ServerName    string // NS hostname contacted, e.g. "a.root-servers.net."
+	ServerAddr    string // IP:port we contacted, e.g. "198.41.0.4:53"
 	Rcode         int
 	Authoritative bool
 	Referral      string   // owner name of NS records in the response, if a referral
@@ -56,7 +56,7 @@ type Hop struct {
 // Walk performs an iterative resolution for name starting from the bundled
 // root hints and returns every hop. It stops at the first AA response, when
 // a referral dead-ends, or after maxHops to avoid loops.
-func Walk(ctx context.Context, r *resolver.Resolver, name string) []Hop {
+func Walk(ctx context.Context, r resolver.Client, name string) []Hop {
 	target := dns.Fqdn(name)
 
 	type srv struct {
@@ -194,4 +194,3 @@ func Render(w io.Writer, name string, hops []Hop) {
 	}
 	fmt.Fprintln(w)
 }
-
