@@ -104,7 +104,7 @@ func (r *Resolver) exchange(ctx context.Context, server, name string, qtype uint
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(name), qtype)
 	m.RecursionDesired = rd
-	m.SetEdns0(4096, false)
+	m.SetEdns0(4096, true)
 
 	client := r.udp
 	if tcp || r.cfg.TCP {
