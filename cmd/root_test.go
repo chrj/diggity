@@ -109,10 +109,7 @@ func TestBuildReportAndRunWithResolver(t *testing.T) {
 		fallbackTo:   []string{"1.1.1.1:53", "8.8.8.8:53"},
 	}
 
-	report, exitCode, err := buildReport(context.Background(), r, cfg)
-	if err != nil {
-		t.Fatalf("buildReport() error = %v", err)
-	}
+	report, exitCode := buildReport(context.Background(), r, cfg)
 	if report.Summary.Skip != 4 || exitCode != 0 {
 		t.Fatalf("buildReport() = summary %#v exitCode %d", report.Summary, exitCode)
 	}
@@ -120,18 +117,20 @@ func TestBuildReportAndRunWithResolver(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 	var walked []string
-	err = runWithResolver(
+	err := runWithResolver(
 		context.Background(),
 		&out,
-		&errOut,
 		cfg,
 		r,
-		func(_ context.Context, _ resolver.Client, host string) []trace.Hop {
-			walked = append(walked, host)
-			return []trace.Hop{{}}
-		},
-		func(w io.Writer, host string, _ []trace.Hop) {
-			_, _ = io.WriteString(w, "trace "+host+"\n")
+		runtimeDeps{
+			errOut: &errOut,
+			walk: func(_ context.Context, _ resolver.Client, host string) []trace.Hop {
+				walked = append(walked, host)
+				return []trace.Hop{{}}
+			},
+			render: func(w io.Writer, host string, _ []trace.Hop) {
+				_, _ = io.WriteString(w, "trace "+host+"\n")
+			},
 		},
 	)
 	if err != nil {

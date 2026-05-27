@@ -35,6 +35,12 @@ type runResolver interface {
 type traceWalker func(context.Context, resolver.Client, string) []trace.Hop
 type traceRenderer func(io.Writer, string, []trace.Hop)
 
+type runtimeDeps struct {
+	errOut io.Writer
+	walk   traceWalker
+	render traceRenderer
+}
+
 // Config holds all parsed CLI flags.
 type Config struct {
 	NoDelegation  bool
@@ -161,15 +167,16 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 		IPv6Only:  cfg.IPv6Only,
 		Trace:     cfg.Trace,
 	})
-	return runWithResolver(ctx, out, os.Stderr, cfg, r, trace.Walk, trace.Render)
+	return runWithResolver(ctx, out, cfg, r, runtimeDeps{
+		errOut: os.Stderr,
+		walk:   trace.Walk,
+		render: trace.Render,
+	})
 }
 
-func runWithResolver(ctx context.Context, out, errOut io.Writer, cfg *Config, r runResolver, walk traceWalker, render traceRenderer) error {
-	renderTraces(ctx, errOut, cfg, r, walk, render)
-	report, exitCode, err := buildReport(ctx, r, cfg)
-	if err != nil {
-		return err
-	}
+func runWithResolver(ctx context.Context, out io.Writer, cfg *Config, r runResolver, deps runtimeDeps) error {
+	renderTraces(ctx, cfg, r, deps)
+	report, exitCode := buildReport(ctx, r, cfg)
 	w, err := output.New(cfg.Output)
 	if err != nil {
 		return &check.ExitError{Code: 3, Err: err}
@@ -182,7 +189,7 @@ func runWithResolver(ctx context.Context, out, errOut io.Writer, cfg *Config, r 
 		return err
 	}
 	if msg, ok := fallbackMessage(r); ok {
-		fmt.Fprintln(errOut, msg)
+		fmt.Fprintln(deps.errOut, msg)
 	}
 	if exitCode != 0 {
 		return &check.ExitError{Code: exitCode}
@@ -202,13 +209,13 @@ func stripPorts(addrs []string) []string {
 	return out
 }
 
-func buildReport(ctx context.Context, r resolver.Client, cfg *Config) (check.Report, int, error) {
+func buildReport(ctx context.Context, r resolver.Client, cfg *Config) (check.Report, int) {
 	var results []check.Result
 	for _, host := range cfg.Hostnames {
 		results = append(results, runChecks(ctx, r, host, cfg)...)
 	}
 	report := reportFromResults(results)
-	return report, exitCodeForReport(report), nil
+	return report, exitCodeForReport(report)
 }
 
 func reportFromResults(results []check.Result) check.Report {
@@ -239,12 +246,12 @@ func exitCodeForReport(report check.Report) int {
 	}
 }
 
-func renderTraces(ctx context.Context, errOut io.Writer, cfg *Config, r resolver.Client, walk traceWalker, render traceRenderer) {
+func renderTraces(ctx context.Context, cfg *Config, r resolver.Client, deps runtimeDeps) {
 	if !cfg.Trace {
 		return
 	}
 	for _, host := range cfg.Hostnames {
-		render(errOut, host, walk(ctx, r, host))
+		deps.render(deps.errOut, host, deps.walk(ctx, r, host))
 	}
 }
 
