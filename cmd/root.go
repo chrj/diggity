@@ -19,6 +19,7 @@ import (
 	"github.com/chrj/diggity/internal/checks/ttl"
 	"github.com/chrj/diggity/internal/output"
 	"github.com/chrj/diggity/internal/resolver"
+	"github.com/chrj/diggity/internal/trace"
 	"github.com/chrj/diggity/internal/version"
 )
 
@@ -148,6 +149,13 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 		IPv6Only:  cfg.IPv6Only,
 		Trace:     cfg.Trace,
 	})
+
+	if cfg.Trace {
+		for _, host := range cfg.Hostnames {
+			hops := trace.Walk(ctx, r, host)
+			trace.Render(os.Stderr, host, hops)
+		}
+	}
 
 	var report check.Report
 	for _, host := range cfg.Hostnames {
