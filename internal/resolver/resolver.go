@@ -23,26 +23,37 @@ type Config struct {
 
 // Resolver issues DNS queries on behalf of the checks.
 type Resolver struct {
-	cfg       Config
-	recursors []string
-	udp       *dns.Client
-	tcp       *dns.Client
+	cfg          Config
+	recursors    []string
+	udp          *dns.Client
+	tcp          *dns.Client
+	userProvided bool     // true if cfg.Resolvers was non-empty
+	fallbackList []string // public resolvers used when the system resolver refuses DNSSEC
+	fellBack     bool
+	fellBackFrom []string
 }
 
+// Public DNS resolvers used as a safety net when the system resolver
+// returns SERVFAIL / REFUSED for DNSSEC queries (a common quirk of
+// systemd-resolved). Both 1.1.1.1 and 8.8.8.8 are DNSSEC-aware.
+var defaultFallbackResolvers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+
 // New returns a Resolver configured with cfg. When cfg.Resolvers is empty,
-// the system resolvers from /etc/resolv.conf are used; if that file is
-// missing or empty, well-known public resolvers are used as a fallback.
+// the system resolvers from /etc/resolv.conf are used; if those refuse
+// DNSSEC queries, the resolver transparently switches to public fallbacks.
 func New(cfg Config) *Resolver {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 3 * time.Second
 	}
 	r := &Resolver{
-		cfg: cfg,
-		udp: &dns.Client{Net: "udp", Timeout: cfg.Timeout},
-		tcp: &dns.Client{Net: "tcp", Timeout: cfg.Timeout},
+		cfg:          cfg,
+		udp:          &dns.Client{Net: "udp", Timeout: cfg.Timeout},
+		tcp:          &dns.Client{Net: "tcp", Timeout: cfg.Timeout},
+		fallbackList: defaultFallbackResolvers,
 	}
 
 	if len(cfg.Resolvers) > 0 {
+		r.userProvided = true
 		for _, addr := range cfg.Resolvers {
 			r.recursors = append(r.recursors, ensurePort(addr))
 		}
@@ -60,7 +71,7 @@ func New(cfg Config) *Resolver {
 		return r
 	}
 
-	r.recursors = []string{"1.1.1.1:53", "8.8.8.8:53"}
+	r.recursors = r.fallbackList
 	return r
 }
 
@@ -69,9 +80,47 @@ func (r *Resolver) Recursors() []string {
 	return append([]string(nil), r.recursors...)
 }
 
+// FallbackInfo reports whether the resolver transparently switched away
+// from the configured system recursors to public DNSSEC-aware resolvers,
+// along with the addresses involved.
+func (r *Resolver) FallbackInfo() (used bool, from, to []string) {
+	if !r.fellBack {
+		return false, nil, nil
+	}
+	return true, append([]string(nil), r.fellBackFrom...), append([]string(nil), r.recursors...)
+}
+
 // Resolve sends a recursive query (RD=1) via one of the configured recursors.
+// If the system resolver answers a DNSKEY/DS query with SERVFAIL or REFUSED
+// (typical of systemd-resolved, which hides root DNSKEY from clients), the
+// resolver transparently switches to public DNSSEC-aware fallbacks and
+// retries. Triggered at most once per Resolver, and never when the user
+// supplied resolvers via -r.
 func (r *Resolver) Resolve(ctx context.Context, name string, qtype uint16) (*dns.Msg, error) {
-	return r.exchangeFirst(ctx, r.recursors, name, qtype, true, r.cfg.TCP)
+	msg, err := r.exchangeFirst(ctx, r.recursors, name, qtype, true, r.cfg.TCP)
+
+	if !r.userProvided && !r.fellBack && shouldFallback(msg, qtype) {
+		r.fellBackFrom = append([]string(nil), r.recursors...)
+		r.recursors = r.fallbackList
+		r.fellBack = true
+		return r.exchangeFirst(ctx, r.recursors, name, qtype, true, r.cfg.TCP)
+	}
+	return msg, err
+}
+
+// shouldFallback decides whether the current response from the system
+// resolver warrants switching to a public fallback. We deliberately scope
+// this to DNSKEY and DS queries: a SERVFAIL on those is the systemd-resolved
+// quirk we want to paper over, while a SERVFAIL on any other query type is
+// usually a genuine upstream problem we should surface, not hide.
+func shouldFallback(msg *dns.Msg, qtype uint16) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.Rcode != dns.RcodeServerFailure && msg.Rcode != dns.RcodeRefused {
+		return false
+	}
+	return qtype == dns.TypeDNSKEY || qtype == dns.TypeDS
 }
 
 // Query sends a non-recursive query (RD=0) directly to server.

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -177,6 +179,11 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 		return err
 	}
 
+	if used, from, to := r.FallbackInfo(); used {
+		fmt.Fprintf(os.Stderr, "diggity: %s refused DNSSEC queries; used %s instead (override with -r)\n",
+			strings.Join(stripPorts(from), ", "), strings.Join(stripPorts(to), ", "))
+	}
+
 	switch {
 	case report.Summary.Fail > 0:
 		return &check.ExitError{Code: 2}
@@ -184,6 +191,18 @@ func run(ctx context.Context, out io.Writer, cfg *Config) error {
 		return &check.ExitError{Code: 1}
 	}
 	return nil
+}
+
+func stripPorts(addrs []string) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		if host, _, err := net.SplitHostPort(a); err == nil {
+			out[i] = host
+		} else {
+			out[i] = a
+		}
+	}
+	return out
 }
 
 func runChecks(ctx context.Context, r *resolver.Resolver, host string, cfg *Config) []check.Result {
