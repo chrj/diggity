@@ -43,8 +43,9 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 	}
 
 	type target struct {
-		label string
-		addr  string
+		label  string
+		addr   string
+		family int // 4 or 6 — IP family of the NS address contacted
 	}
 	var targets []target
 	for _, host := range nsHosts {
@@ -53,9 +54,14 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 			continue
 		}
 		for _, ip := range ips {
+			fam := 4
+			if ip.To4() == nil {
+				fam = 6
+			}
 			targets = append(targets, target{
-				label: fmt.Sprintf("%s/%s", trimDot(host), ip),
-				addr:  net.JoinHostPort(ip.String(), "53"),
+				label:  fmt.Sprintf("%s/%s", trimDot(host), ip),
+				addr:   net.JoinHostPort(ip.String(), "53"),
+				family: fam,
 			})
 		}
 	}
@@ -71,6 +77,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 			})
 			continue
 		}
+		snap.family = t.family
 		snapshots[t.label] = snap
 	}
 
@@ -101,6 +108,7 @@ type snapshot struct {
 	ns     string
 	a      string
 	aaaa   string
+	family int
 }
 
 // takeSnapshot queries server for SOA + NS at zone and A + AAAA at hostname.
@@ -195,6 +203,17 @@ func compareField(snapshots map[string]snapshot, fieldName string, getter func(s
 		}
 	}
 
+	// Detect topology-aware DNS: each IP family is internally consistent
+	// but the two families disagree. That is usually a CDN routing decision
+	// (Akamai, geo-DNS, etc.), not real zone-data drift, so downgrade to WARN.
+	if v4Ans, v6Ans, ok := v4v6Split(snapshots, getter); ok {
+		return check.Finding{
+			Status:  check.StatusWarn,
+			Message: fmt.Sprintf("%s differs by transport — looks like topology-aware DNS / CDN, not zone drift", fieldName),
+			Detail:  fmt.Sprintf("via IPv4 → %s\nvia IPv6 → %s", displayOr(v4Ans), displayOr(v6Ans)),
+		}
+	}
+
 	var lines []string
 	for value, servers := range grouped {
 		sort.Strings(servers)
@@ -210,6 +229,51 @@ func compareField(snapshots map[string]snapshot, fieldName string, getter func(s
 		Message: fmt.Sprintf("servers disagree on %s", fieldName),
 		Detail:  strings.Join(lines, "\n"),
 	}
+}
+
+// v4v6Split reports whether the answers across snapshots split cleanly along
+// IP transport: every v4-contacted server returned the same value, every
+// v6-contacted server returned the same value, and the two values differ.
+// Both families must be represented for the pattern to match.
+func v4v6Split(snapshots map[string]snapshot, getter func(snapshot) string) (string, string, bool) {
+	v4Answers := map[string]struct{}{}
+	v6Answers := map[string]struct{}{}
+	var v4Count, v6Count int
+	for _, snap := range snapshots {
+		switch snap.family {
+		case 4:
+			v4Answers[getter(snap)] = struct{}{}
+			v4Count++
+		case 6:
+			v6Answers[getter(snap)] = struct{}{}
+			v6Count++
+		}
+	}
+	if v4Count == 0 || v6Count == 0 {
+		return "", "", false
+	}
+	if len(v4Answers) != 1 || len(v6Answers) != 1 {
+		return "", "", false
+	}
+	var v4, v6 string
+	for a := range v4Answers {
+		v4 = a
+	}
+	for a := range v6Answers {
+		v6 = a
+	}
+	if v4 == v6 {
+		return "", "", false
+	}
+	return v4, v6, true
+}
+
+func displayOr(v string) string {
+	d := displayValue(v)
+	if d == "" {
+		return "(no records)"
+	}
+	return d
 }
 
 func displayValue(v string) string {
