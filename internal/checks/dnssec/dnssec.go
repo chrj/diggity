@@ -94,44 +94,51 @@ func zoneChain(zone string) []string {
 //   - signed:   false if this zone is unsigned (chain stops here, pass)
 //   - halt:     true on a fatal verification error (chain stops here, fail)
 func validateLevel(ctx context.Context, r resolver.RecursiveClient, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+	if zone == "." {
+		return validateRootLevel(ctx, r, opts)
+	}
+	return validateSignedLevel(ctx, r, zone, parentKeys, opts)
+}
+
+func validateRootLevel(ctx context.Context, r resolver.RecursiveClient, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
+	label := zoneLabel(".")
+
+	// Fetch root DNSKEY and match against bundled trust anchors.
+	keys, sigs, err := fetchDNSKEY(ctx, r, ".")
+	if err != nil {
+		return []check.Finding{failFinding(label, "failed to fetch root DNSKEY", err)}, nil, true, true
+	}
+
+	matched := matchAgainstAnchors(keys, bundledRootAnchors)
+	if len(matched) == 0 {
+		return []check.Finding{{
+			Status:  check.StatusFail,
+			Message: label + " root DNSKEY does not match any bundled trust anchor",
+		}}, nil, true, true
+	}
+
+	findings := []check.Finding{{
+		Status:  check.StatusPass,
+		Message: fmt.Sprintf("%s root DNSKEY matches bundled trust anchor (key tag %d)", label, matched[0].KeyTag()),
+	}}
+
+	// Verify the DNSKEY RRset is signed by a matched KSK.
+	if err := verifySignatures(rrsAny(keys), sigs, matched); err != nil {
+		findings = append(findings, check.Finding{
+			Status:  check.StatusFail,
+			Message: fmt.Sprintf("%s DNSKEY RRSIG verification failed: %v", label, err),
+		})
+		return findings, nil, true, true
+	}
+
+	findings = append(findings, signatureWarnings(sigs, label+" DNSKEY", opts)...)
+	findings = append(findings, dnskeyWarnings(keys, label)...)
+	return findings, keys, true, false
+}
+
+func validateSignedLevel(ctx context.Context, r resolver.RecursiveClient, zone string, parentKeys []*dns.DNSKEY, opts Options) ([]check.Finding, []*dns.DNSKEY, bool, bool) {
 	label := zoneLabel(zone)
 	var findings []check.Finding
-
-	var trustedKSKs []*dns.DNSKEY
-
-	if zone == "." {
-		// Fetch root DNSKEY and match against bundled trust anchors.
-		keys, sigs, err := fetchDNSKEY(ctx, r, zone)
-		if err != nil {
-			findings = append(findings, failFinding(label, "failed to fetch root DNSKEY", err))
-			return findings, nil, true, true
-		}
-		matched := matchAgainstAnchors(keys, bundledRootAnchors)
-		if len(matched) == 0 {
-			findings = append(findings, check.Finding{
-				Status:  check.StatusFail,
-				Message: label + " root DNSKEY does not match any bundled trust anchor",
-			})
-			return findings, nil, true, true
-		}
-		trustedKSKs = matched
-		findings = append(findings, check.Finding{
-			Status:  check.StatusPass,
-			Message: fmt.Sprintf("%s root DNSKEY matches bundled trust anchor (key tag %d)", label, matched[0].KeyTag()),
-		})
-
-		// Verify the DNSKEY RRset is signed by a matched KSK.
-		if err := verifySignatures(rrsAny(keys), sigs, trustedKSKs); err != nil {
-			findings = append(findings, check.Finding{
-				Status:  check.StatusFail,
-				Message: fmt.Sprintf("%s DNSKEY RRSIG verification failed: %v", label, err),
-			})
-			return findings, nil, true, true
-		}
-		findings = append(findings, signatureWarnings(sigs, label+" DNSKEY", opts)...)
-		findings = append(findings, dnskeyWarnings(keys, label)...)
-		return findings, keys, true, false
-	}
 
 	// Non-root: fetch DS at parent and DNSKEY at zone, then link them.
 	dsSet, dsSigs, err := fetchDS(ctx, r, zone)
@@ -176,7 +183,7 @@ func validateLevel(ctx context.Context, r resolver.RecursiveClient, zone string,
 		return findings, nil, true, true
 	}
 
-	trustedKSKs = matchAgainstDS(keys, dsSet)
+	trustedKSKs := matchAgainstDS(keys, dsSet)
 	if len(trustedKSKs) == 0 {
 		findings = append(findings, check.Finding{
 			Status:  check.StatusFail,
