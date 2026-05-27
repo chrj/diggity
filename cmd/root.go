@@ -4,12 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/chrj/diggity/internal/check"
+	"github.com/chrj/diggity/internal/checks/consistency"
+	"github.com/chrj/diggity/internal/checks/delegation"
+	"github.com/chrj/diggity/internal/checks/dnssec"
+	"github.com/chrj/diggity/internal/checks/ttl"
+	"github.com/chrj/diggity/internal/output"
+	"github.com/chrj/diggity/internal/resolver"
 	"github.com/chrj/diggity/internal/version"
 )
 
@@ -80,7 +87,7 @@ func newRootCmd() (*cobra.Command, *Config) {
 				return &check.ExitError{Code: 3, Err: errors.New("at least one hostname is required")}
 			}
 			cfg.Hostnames = args
-			return run(c.Context(), cfg)
+			return run(c.Context(), c.OutOrStdout(), cfg)
 		},
 	}
 
@@ -129,6 +136,97 @@ func Execute() error {
 	return nil
 }
 
-func run(_ context.Context, _ *Config) error {
-	return &check.ExitError{Code: 4, Err: errors.New("checks not implemented yet")}
+func run(ctx context.Context, out io.Writer, cfg *Config) error {
+	r := resolver.New(resolver.Config{
+		Resolvers: cfg.Resolvers,
+		Timeout:   cfg.Timeout,
+		Retries:   cfg.Retries,
+		TCP:       cfg.TCP,
+		IPv4Only:  cfg.IPv4Only,
+		IPv6Only:  cfg.IPv6Only,
+		Trace:     cfg.Trace,
+	})
+
+	var report check.Report
+	for _, host := range cfg.Hostnames {
+		report.Results = append(report.Results, runChecks(ctx, r, host, cfg)...)
+	}
+
+	for _, res := range report.Results {
+		switch res.Status {
+		case check.StatusPass:
+			report.Summary.Pass++
+		case check.StatusWarn:
+			report.Summary.Warn++
+		case check.StatusFail:
+			report.Summary.Fail++
+		case check.StatusSkip:
+			report.Summary.Skip++
+		}
+	}
+
+	w, err := output.New(cfg.Output)
+	if err != nil {
+		return &check.ExitError{Code: 3, Err: err}
+	}
+	if tw, ok := w.(*output.TextWriter); ok {
+		tw.NoColor = cfg.NoColor
+		tw.Quiet = cfg.Quiet
+	}
+	if err := w.Write(out, report); err != nil {
+		return err
+	}
+
+	switch {
+	case report.Summary.Fail > 0:
+		return &check.ExitError{Code: 2}
+	case report.Summary.Warn > 0:
+		return &check.ExitError{Code: 1}
+	}
+	return nil
+}
+
+func runChecks(ctx context.Context, r *resolver.Resolver, host string, cfg *Config) []check.Result {
+	var results []check.Result
+
+	if cfg.NoDelegation {
+		results = append(results, skipped(delegation.Name, host))
+	} else {
+		results = append(results, delegation.Run(ctx, r, host))
+	}
+
+	if cfg.NoTTL {
+		results = append(results, skipped(ttl.Name, host))
+	} else {
+		results = append(results, ttl.Run(ctx, r, host, ttl.Options{
+			Min:        cfg.TTLMin,
+			Max:        cfg.TTLMax,
+			ExtraTypes: cfg.Types,
+		}))
+	}
+
+	if cfg.NoDNSSEC {
+		results = append(results, skipped(dnssec.Name, host))
+	} else {
+		results = append(results, dnssec.Run(ctx, r, host, dnssec.Options{
+			ExpiryWarn: cfg.ExpiryWarn,
+		}))
+	}
+
+	if cfg.NoConsistency {
+		results = append(results, skipped(consistency.Name, host))
+	} else {
+		results = append(results, consistency.Run(ctx, r, host))
+	}
+
+	return results
+}
+
+func skipped(name, host string) check.Result {
+	return check.Result{
+		Check:    name,
+		Hostname: host,
+		Status:   check.StatusSkip,
+		Findings: []check.Finding{{Status: check.StatusSkip, Message: "skipped"}},
+	}
 }
