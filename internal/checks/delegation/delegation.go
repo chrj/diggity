@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/chrj/diggity/internal/check"
+	"github.com/chrj/diggity/internal/dnsutil"
 	"github.com/chrj/diggity/internal/resolver"
 )
 
@@ -20,27 +21,27 @@ const Name = "delegation"
 func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
-	zone, err := findZone(ctx, r, hostname)
+	zone, err := dnsutil.FindZone(ctx, r, hostname)
 	if err != nil {
-		return fail(res, fmt.Sprintf("could not find zone for %s: %v", hostname, err))
+		return check.Fail(res, fmt.Sprintf("could not find zone for %s: %v", hostname, err))
 	}
 
-	parent, ok := parentName(zone)
+	parent, ok := dnsutil.ParentName(zone)
 	if !ok {
-		return fail(res, fmt.Sprintf("%s has no parent zone (cannot check delegation of the root)", trimDot(zone)))
+		return check.Fail(res, fmt.Sprintf("%s has no parent zone (cannot check delegation of the root)", dnsutil.TrimDot(zone)))
 	}
 
 	parentServers, err := authoritativeAddrs(ctx, r, parent)
 	if err != nil {
-		return fail(res, fmt.Sprintf("could not resolve authoritative servers for %s: %v", trimDot(parent), err))
+		return check.Fail(res, fmt.Sprintf("could not resolve authoritative servers for %s: %v", dnsutil.TrimDot(parent), err))
 	}
 
 	parentSide, glue, err := referral(ctx, r, parentServers, zone)
 	if err != nil {
-		return fail(res, fmt.Sprintf("could not fetch delegation of %s from parent: %v", trimDot(zone), err))
+		return check.Fail(res, fmt.Sprintf("could not fetch delegation of %s from parent: %v", dnsutil.TrimDot(zone), err))
 	}
 	if len(parentSide) == 0 {
-		return fail(res, fmt.Sprintf("parent %s has no NS records for %s", trimDot(parent), trimDot(zone)))
+		return check.Fail(res, fmt.Sprintf("parent %s has no NS records for %s", dnsutil.TrimDot(parent), dnsutil.TrimDot(zone)))
 	}
 
 	var findings []check.Finding
@@ -59,11 +60,11 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 			}
 			continue
 		}
-		ips, err := resolveIPs(ctx, r, ns)
+		ips, err := dnsutil.ResolveIPs(ctx, r, ns)
 		if err != nil || len(ips) == 0 {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusFail,
-				Message: fmt.Sprintf("NS %s has no A/AAAA records", trimDot(ns)),
+				Message: fmt.Sprintf("NS %s has no A/AAAA records", dnsutil.TrimDot(ns)),
 			})
 			continue
 		}
@@ -77,10 +78,10 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 	childSets := map[string][]string{}
 	serials := map[string]uint32{}
 	for _, t := range targets {
-		label := fmt.Sprintf("%s/%s", trimDot(t.host), t.ip)
+		label := fmt.Sprintf("%s/%s", dnsutil.TrimDot(t.host), t.ip)
 		srv := net.JoinHostPort(t.ip.String(), "53")
 
-		nsMsg, err := r.Query(ctx, srv, trimDot(zone), dns.TypeNS)
+		nsMsg, err := r.Query(ctx, srv, dnsutil.TrimDot(zone), dns.TypeNS)
 		if err != nil {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusFail,
@@ -110,7 +111,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 		sort.Strings(hosts)
 		childSets[label] = hosts
 
-		soaMsg, err := r.QueryTCP(ctx, srv, trimDot(zone), dns.TypeSOA)
+		soaMsg, err := r.QueryTCP(ctx, srv, dnsutil.TrimDot(zone), dns.TypeSOA)
 		if err != nil {
 			findings = append(findings, check.Finding{
 				Status:  check.StatusFail,
@@ -170,7 +171,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 			continue
 		}
 		if len(glue[strings.ToLower(ns)]) == 0 {
-			missingGlue = append(missingGlue, trimDot(ns))
+			missingGlue = append(missingGlue, dnsutil.TrimDot(ns))
 		}
 	}
 	if len(missingGlue) > 0 {
@@ -202,48 +203,12 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string) check.Resul
 	}
 
 	res.Findings = findings
-	res.Status = aggregateStatus(findings)
+	res.Status = check.Aggregate(findings)
 	return res
 }
 
-func findZone(ctx context.Context, r *resolver.Resolver, name string) (string, error) {
-	msg, err := r.Resolve(ctx, dns.Fqdn(name), dns.TypeSOA)
-	if err != nil {
-		return "", err
-	}
-	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
-		return "", fmt.Errorf("rcode %s", dns.RcodeToString[msg.Rcode])
-	}
-	for _, rr := range msg.Answer {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
-	}
-	for _, rr := range msg.Ns {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
-	}
-	return "", fmt.Errorf("no SOA in response")
-}
-
-func parentName(name string) (string, bool) {
-	name = dns.Fqdn(name)
-	if name == "." {
-		return "", false
-	}
-	i := strings.IndexByte(name, '.')
-	if i < 0 {
-		return "", false
-	}
-	if i+1 >= len(name) {
-		return ".", true
-	}
-	return name[i+1:], true
-}
-
 func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) ([]string, error) {
-	msg, err := r.Resolve(ctx, trimDot(zone), dns.TypeNS)
+	msg, err := r.Resolve(ctx, dnsutil.TrimDot(zone), dns.TypeNS)
 	if err != nil {
 		return nil, err
 	}
@@ -264,12 +229,12 @@ func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) 
 		}
 	}
 	if len(hosts) == 0 {
-		return nil, fmt.Errorf("no NS for %s", trimDot(zone))
+		return nil, fmt.Errorf("no NS for %s", dnsutil.TrimDot(zone))
 	}
 
 	var addrs []string
 	for _, h := range hosts {
-		ips, err := resolveIPs(ctx, r, h)
+		ips, err := dnsutil.ResolveIPs(ctx, r, h)
 		if err != nil {
 			continue
 		}
@@ -278,7 +243,7 @@ func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) 
 		}
 	}
 	if len(addrs) == 0 {
-		return nil, fmt.Errorf("no NS for %s resolved to an IP", trimDot(zone))
+		return nil, fmt.Errorf("no NS for %s resolved to an IP", dnsutil.TrimDot(zone))
 	}
 	return addrs, nil
 }
@@ -290,7 +255,7 @@ func authoritativeAddrs(ctx context.Context, r *resolver.Resolver, zone string) 
 func referral(ctx context.Context, r *resolver.Resolver, servers []string, zone string) ([]string, map[string][]net.IP, error) {
 	var lastErr error
 	for _, srv := range servers {
-		msg, err := r.Query(ctx, srv, trimDot(zone), dns.TypeNS)
+		msg, err := r.Query(ctx, srv, dnsutil.TrimDot(zone), dns.TypeNS)
 		if err != nil {
 			lastErr = err
 			continue
@@ -335,28 +300,6 @@ func referral(ctx context.Context, r *resolver.Resolver, servers []string, zone 
 	return nil, nil, lastErr
 }
 
-func resolveIPs(ctx context.Context, r *resolver.Resolver, host string) ([]net.IP, error) {
-	var ips []net.IP
-	if msg, err := r.Resolve(ctx, trimDot(host), dns.TypeA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.A); ok {
-				ips = append(ips, a.A)
-			}
-		}
-	}
-	if msg, err := r.Resolve(ctx, trimDot(host), dns.TypeAAAA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.AAAA); ok {
-				ips = append(ips, a.AAAA)
-			}
-		}
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no A/AAAA records")
-	}
-	return ips, nil
-}
-
 func inBailiwick(ns, zone string) bool {
 	ns = dns.Fqdn(strings.ToLower(ns))
 	zone = dns.Fqdn(strings.ToLower(zone))
@@ -368,8 +311,6 @@ func inBailiwick(ns, zone string) bool {
 	}
 	return strings.HasSuffix(ns, "."+zone)
 }
-
-func trimDot(s string) string { return strings.TrimSuffix(s, ".") }
 
 func normaliseSet(in []string) []string {
 	seen := map[string]struct{}{}
@@ -431,27 +372,7 @@ func diffSets(a, b []string) []string {
 func stripDots(in []string) []string {
 	out := make([]string, len(in))
 	for i, s := range in {
-		out[i] = trimDot(s)
+		out[i] = dnsutil.TrimDot(s)
 	}
 	return out
-}
-
-func aggregateStatus(findings []check.Finding) check.Status {
-	status := check.StatusPass
-	for _, f := range findings {
-		if f.Status == check.StatusSkip {
-			continue
-		}
-		// Pass < Warn < Fail ordering via the iota values.
-		if f.Status > status && f.Status <= check.StatusFail {
-			status = f.Status
-		}
-	}
-	return status
-}
-
-func fail(res check.Result, msg string) check.Result {
-	res.Status = check.StatusFail
-	res.Findings = []check.Finding{{Status: check.StatusFail, Message: msg}}
-	return res
 }

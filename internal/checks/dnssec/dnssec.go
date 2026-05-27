@@ -1,15 +1,15 @@
 package dnssec
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"context"
-
 	"github.com/miekg/dns"
 
 	"github.com/chrj/diggity/internal/check"
+	"github.com/chrj/diggity/internal/dnsutil"
 	"github.com/chrj/diggity/internal/resolver"
 )
 
@@ -41,9 +41,9 @@ var deprecatedDigestTypes = map[uint8]string{
 func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Options) check.Result {
 	res := check.Result{Check: Name, Hostname: hostname}
 
-	zone, err := findZone(ctx, r, hostname)
+	zone, err := dnsutil.FindZone(ctx, r, hostname)
 	if err != nil {
-		return fail(res, fmt.Sprintf("could not find zone for %s: %v", hostname, err))
+		return check.Fail(res, fmt.Sprintf("could not find zone for %s: %v", hostname, err))
 	}
 
 	chain := zoneChain(zone)
@@ -63,7 +63,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Option
 	}
 
 	res.Findings = findings
-	res.Status = aggregateStatus(findings)
+	res.Status = check.Aggregate(findings)
 	return res
 }
 
@@ -77,7 +77,7 @@ func zoneChain(zone string) []string {
 		if zone == "." {
 			break
 		}
-		next, ok := parentName(zone)
+		next, ok := dnsutil.ParentName(zone)
 		if !ok {
 			break
 		}
@@ -376,66 +376,11 @@ func rrsAny[T dns.RR](items []T) []dns.RR {
 	return out
 }
 
-func findZone(ctx context.Context, r *resolver.Resolver, name string) (string, error) {
-	msg, err := r.Resolve(ctx, dns.Fqdn(name), dns.TypeSOA)
-	if err != nil {
-		return "", err
-	}
-	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
-		return "", fmt.Errorf("rcode %s", dns.RcodeToString[msg.Rcode])
-	}
-	for _, rr := range msg.Answer {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
-	}
-	for _, rr := range msg.Ns {
-		if soa, ok := rr.(*dns.SOA); ok {
-			return soa.Hdr.Name, nil
-		}
-	}
-	return "", fmt.Errorf("no SOA in response")
-}
-
-func parentName(name string) (string, bool) {
-	name = dns.Fqdn(name)
-	if name == "." {
-		return "", false
-	}
-	i := strings.IndexByte(name, '.')
-	if i < 0 {
-		return "", false
-	}
-	if i+1 >= len(name) {
-		return ".", true
-	}
-	return name[i+1:], true
-}
-
 func zoneLabel(zone string) string {
 	if zone == "." {
 		return "."
 	}
 	return strings.TrimSuffix(zone, ".")
-}
-
-func aggregateStatus(findings []check.Finding) check.Status {
-	status := check.StatusPass
-	for _, f := range findings {
-		if f.Status == check.StatusSkip {
-			continue
-		}
-		if f.Status > status && f.Status <= check.StatusFail {
-			status = f.Status
-		}
-	}
-	return status
-}
-
-func fail(res check.Result, msg string) check.Result {
-	res.Status = check.StatusFail
-	res.Findings = []check.Finding{{Status: check.StatusFail, Message: msg}}
-	return res
 }
 
 func failFinding(label, what string, err error) check.Finding {

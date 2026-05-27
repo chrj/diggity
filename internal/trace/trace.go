@@ -10,6 +10,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/chrj/diggity/internal/dnsutil"
 	"github.com/chrj/diggity/internal/resolver"
 )
 
@@ -121,11 +122,11 @@ func Walk(ctx context.Context, r *resolver.Resolver, name string) []Hop {
 			case *dns.A:
 				k := strings.ToLower(x.Hdr.Name)
 				glueMap[k] = append(glueMap[k], x.A)
-				hop.Glue = append(hop.Glue, fmt.Sprintf("%s A %s", trimDot(x.Hdr.Name), x.A))
+				hop.Glue = append(hop.Glue, fmt.Sprintf("%s A %s", dnsutil.TrimDot(x.Hdr.Name), x.A))
 			case *dns.AAAA:
 				k := strings.ToLower(x.Hdr.Name)
 				glueMap[k] = append(glueMap[k], x.AAAA)
-				hop.Glue = append(hop.Glue, fmt.Sprintf("%s AAAA %s", trimDot(x.Hdr.Name), x.AAAA))
+				hop.Glue = append(hop.Glue, fmt.Sprintf("%s AAAA %s", dnsutil.TrimDot(x.Hdr.Name), x.AAAA))
 			}
 		}
 		sort.Strings(hop.Glue)
@@ -148,7 +149,7 @@ func Walk(ctx context.Context, r *resolver.Resolver, name string) []Hop {
 				}
 				continue
 			}
-			ips, err := resolveIPs(ctx, r, ns.Ns)
+			ips, err := dnsutil.ResolveIPs(ctx, r, ns.Ns)
 			if err != nil {
 				continue
 			}
@@ -167,7 +168,7 @@ func Walk(ctx context.Context, r *resolver.Resolver, name string) []Hop {
 
 // Render writes a human-readable trace of hops to w, prefaced by name.
 func Render(w io.Writer, name string, hops []Hop) {
-	fmt.Fprintf(w, "iterative walk for %s:\n", trimDot(dns.Fqdn(name)))
+	fmt.Fprintf(w, "iterative walk for %s:\n", dnsutil.TrimDot(dns.Fqdn(name)))
 	for i, h := range hops {
 		num := fmt.Sprintf("%2d", i+1)
 		if h.Err != nil {
@@ -178,14 +179,14 @@ func Render(w io.Writer, name string, hops []Hop) {
 		if h.Authoritative {
 			aa = "  AA"
 		}
-		fmt.Fprintf(w, "  %s. @%s (%s)  rcode=%s%s\n", num, trimDot(h.ServerName), h.ServerAddr, dns.RcodeToString[h.Rcode], aa)
+		fmt.Fprintf(w, "  %s. @%s (%s)  rcode=%s%s\n", num, dnsutil.TrimDot(h.ServerName), h.ServerAddr, dns.RcodeToString[h.Rcode], aa)
 		if h.Referral != "" && !h.Authoritative {
-			fmt.Fprintf(w, "        referral to %s:\n", trimDot(h.Referral))
+			fmt.Fprintf(w, "        referral to %s:\n", dnsutil.TrimDot(h.Referral))
 		} else if h.Authoritative && len(h.NS) > 0 {
-			fmt.Fprintf(w, "        NS %s:\n", trimDot(h.Referral))
+			fmt.Fprintf(w, "        NS %s:\n", dnsutil.TrimDot(h.Referral))
 		}
 		for _, ns := range h.NS {
-			fmt.Fprintf(w, "          - %s\n", trimDot(ns))
+			fmt.Fprintf(w, "          - %s\n", dnsutil.TrimDot(ns))
 		}
 		for _, g := range h.Glue {
 			fmt.Fprintf(w, "          + %s\n", g)
@@ -194,28 +195,3 @@ func Render(w io.Writer, name string, hops []Hop) {
 	fmt.Fprintln(w)
 }
 
-func resolveIPs(ctx context.Context, r *resolver.Resolver, host string) ([]net.IP, error) {
-	var ips []net.IP
-	if msg, err := r.Resolve(ctx, host, dns.TypeA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.A); ok {
-				ips = append(ips, a.A)
-			}
-		}
-	}
-	if msg, err := r.Resolve(ctx, host, dns.TypeAAAA); err == nil {
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.AAAA); ok {
-				ips = append(ips, a.AAAA)
-			}
-		}
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no A/AAAA for %s", host)
-	}
-	return ips, nil
-}
-
-func trimDot(s string) string {
-	return strings.TrimSuffix(s, ".")
-}

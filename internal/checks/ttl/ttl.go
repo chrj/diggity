@@ -97,7 +97,7 @@ func Run(ctx context.Context, r *resolver.Resolver, hostname string, opts Option
 		})
 	}
 
-	res.Status = aggregateStatus(res.Findings)
+	res.Status = check.Aggregate(res.Findings)
 	return res
 }
 
@@ -162,17 +162,4 @@ func appendUnique(list []uint16, qt uint16) []uint16 {
 		}
 	}
 	return append(list, qt)
-}
-
-func aggregateStatus(findings []check.Finding) check.Status {
-	status := check.StatusPass
-	for _, f := range findings {
-		if f.Status == check.StatusSkip {
-			continue
-		}
-		if f.Status > status && f.Status <= check.StatusFail {
-			status = f.Status
-		}
-	}
-	return status
 }
