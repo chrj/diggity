@@ -76,11 +76,14 @@ func TestTextWriterLabelAndSummarise(t *testing.T) {
 		t.Fatalf("summarise() = %q", got)
 	}
 
-	if got := (TextWriter{NoColor: true}).label(check.StatusWarn); got != "[WARN]" {
+	if got := (TextWriter{}).label(check.StatusWarn); got != "[WARN]" {
 		t.Fatalf("label() = %q, want %q", got, "[WARN]")
 	}
-	if got := (TextWriter{}).label(check.StatusFail); !strings.Contains(got, "[FAIL]") {
+	if got := (TextWriter{Color: true}).label(check.StatusFail); !strings.Contains(got, "[FAIL]") {
 		t.Fatalf("colored label missing FAIL marker: %q", got)
+	}
+	if got := (TextWriter{Color: true}).label(check.StatusFail); !strings.Contains(got, "\x1b[31m") {
+		t.Fatalf("colored label missing ANSI escape: %q", got)
 	}
 }
 
@@ -88,7 +91,7 @@ func TestTextWriterWriteQuietFiltersPassingResults(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	err := (TextWriter{NoColor: true, Quiet: true}).Write(&buf, sampleReport())
+	err := (TextWriter{Quiet: true}).Write(&buf, sampleReport())
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -108,6 +111,32 @@ func TestTextWriterWriteQuietFiltersPassingResults(t *testing.T) {
 	}
 	if !strings.Contains(out, "summary: 1 pass, 0 warn, 1 fail, 0 skip") {
 		t.Fatalf("Write() output missing summary: %q", out)
+	}
+}
+
+func TestTextWriterWriteUnicodeTreeLayout(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := (TextWriter{Color: true, Unicode: true}).Write(&buf, sampleReport())
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"example.com", "├─", "└─", "✓", "✗", "delegation", "dnssec", "signature invalid"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Write() output missing %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "summary:") {
+		t.Fatalf("Write() unicode output should not use bracket summary line: %q", out)
+	}
+	if !strings.Contains(out, " · ") {
+		t.Fatalf("Write() unicode output missing summary separator: %q", out)
+	}
+	if !strings.Contains(out, "\x1b[1mexample.com\x1b[0m") {
+		t.Fatalf("Write() unicode output missing bold hostname: %q", out)
 	}
 }
 

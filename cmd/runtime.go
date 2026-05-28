@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-isatty"
+
 	"github.com/chrj/diggity/internal/check"
 	"github.com/chrj/diggity/internal/checks/consistency"
 	"github.com/chrj/diggity/internal/checks/delegation"
@@ -61,7 +63,8 @@ func runWithResolver(ctx context.Context, out io.Writer, cfg *Config, r runtimeQ
 		return &check.ExitError{Code: 3, Err: err}
 	}
 	if tw, ok := w.(*output.TextWriter); ok {
-		tw.NoColor = cfg.NoColor
+		tw.Color = !cfg.NoColor && isTerminal(out)
+		tw.Unicode = tw.Color && localeIsUTF8()
 		tw.Quiet = cfg.Quiet
 	}
 	if err := w.Write(out, report); err != nil {
@@ -133,6 +136,32 @@ func fallbackMessage(r fallbackAware) (string, bool) {
 	}
 	return fmt.Sprintf("diggity: %s refused DNSSEC queries; used %s instead (override with -r)",
 		strings.Join(stripPorts(from), ", "), strings.Join(stripPorts(to), ", ")), true
+}
+
+// isTerminal reports whether w is a terminal stdout/stderr. It returns false
+// for buffers, files, and pipes so coloured/Unicode output stays out of
+// captured logs.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
+}
+
+// localeIsUTF8 reports whether the user's locale advertises UTF-8 so the
+// renderer can use box-drawing and glyph characters without garbling
+// terminals stuck on legacy encodings.
+func localeIsUTF8() bool {
+	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		v := os.Getenv(key)
+		if v == "" {
+			continue
+		}
+		v = strings.ToUpper(v)
+		return strings.Contains(v, "UTF-8") || strings.Contains(v, "UTF8")
+	}
+	return false
 }
 
 func stripPorts(addrs []string) []string {

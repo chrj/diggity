@@ -5,6 +5,7 @@ go 1.24.0
 toolchain go1.26.1
 
 require (
+	github.com/mattn/go-isatty v0.0.22
 	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
 )
