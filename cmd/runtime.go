@@ -71,7 +71,7 @@ func runWithResolver(ctx context.Context, out io.Writer, cfg *Config, r runtimeQ
 		return err
 	}
 	if msg, ok := fallbackMessage(r); ok {
-		fmt.Fprintln(deps.errOut, msg)
+		_, _ = fmt.Fprintln(deps.errOut, msg)
 	}
 	if exitCode != 0 {
 		return &check.ExitError{Code: exitCode}

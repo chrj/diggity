@@ -41,7 +41,7 @@ func (t TextWriter) Write(w io.Writer, report check.Report) error {
 
 	for i, host := range order {
 		if i > 0 {
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 		}
 		if t.Unicode {
 			t.renderHostTree(w, host, byHost[host])
@@ -51,19 +51,19 @@ func (t TextWriter) Write(w io.Writer, report check.Report) error {
 	}
 
 	if len(order) > 0 {
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 	t.renderSummary(w, report.Summary)
 	return nil
 }
 
 func (t TextWriter) renderHostBracket(w io.Writer, host string, results []check.Result) {
-	fmt.Fprintln(w, t.style(host, ansiBold))
+	_, _ = fmt.Fprintln(w, t.style(host, ansiBold))
 	for _, res := range results {
 		if t.Quiet && res.Status != check.StatusFail {
 			continue
 		}
-		fmt.Fprintf(w, "  %s  %-11s  %s\n", t.label(res.Status), res.Check, summarise(res))
+		_, _ = fmt.Fprintf(w, "  %s  %-11s  %s\n", t.label(res.Status), res.Check, summarise(res))
 		for _, f := range res.Findings {
 			if f.Status == check.StatusPass && len(res.Findings) == 1 {
 				continue
@@ -71,10 +71,10 @@ func (t TextWriter) renderHostBracket(w io.Writer, host string, results []check.
 			if t.Quiet && f.Status != check.StatusFail {
 				continue
 			}
-			fmt.Fprintf(w, "         %s  %s\n", t.label(f.Status), f.Message)
+			_, _ = fmt.Fprintf(w, "         %s  %s\n", t.label(f.Status), f.Message)
 			if f.Detail != "" {
 				for line := range strings.SplitSeq(strings.TrimRight(f.Detail, "\n"), "\n") {
-					fmt.Fprintf(w, "             %s\n", t.style(line, ansiDim))
+					_, _ = fmt.Fprintf(w, "             %s\n", t.style(line, ansiDim))
 				}
 			}
 		}
@@ -89,7 +89,7 @@ func (t TextWriter) renderHostTree(w io.Writer, host string, results []check.Res
 		}
 		visible = append(visible, res)
 	}
-	fmt.Fprintln(w, t.style(host, ansiBold))
+	_, _ = fmt.Fprintln(w, t.style(host, ansiBold))
 	for i, res := range visible {
 		last := i == len(visible)-1
 		branch := "├─"
@@ -98,15 +98,15 @@ func (t TextWriter) renderHostTree(w io.Writer, host string, results []check.Res
 			branch = "└─"
 			cont = "   "
 		}
-		fmt.Fprintf(w, "%s %s %-11s  %s\n",
+		_, _ = fmt.Fprintf(w, "%s %s %-11s  %s\n",
 			branch, t.glyph(res.Status), res.Check, summarise(res))
 
 		findings := t.visibleFindings(res)
 		for _, f := range findings {
-			fmt.Fprintf(w, "%s   %s %s\n", cont, t.glyph(f.Status), f.Message)
+			_, _ = fmt.Fprintf(w, "%s   %s %s\n", cont, t.glyph(f.Status), f.Message)
 			if f.Detail != "" {
 				for line := range strings.SplitSeq(strings.TrimRight(f.Detail, "\n"), "\n") {
-					fmt.Fprintf(w, "%s     %s\n", cont, t.style(line, ansiDim))
+					_, _ = fmt.Fprintf(w, "%s     %s\n", cont, t.style(line, ansiDim))
 				}
 			}
 		}
@@ -132,7 +132,7 @@ func (t TextWriter) visibleFindings(res check.Result) []check.Finding {
 
 func (t TextWriter) renderSummary(w io.Writer, s check.Summary) {
 	if !t.Unicode {
-		fmt.Fprintf(w, "summary: %d pass, %d warn, %d fail, %d skip\n",
+		_, _ = fmt.Fprintf(w, "summary: %d pass, %d warn, %d fail, %d skip\n",
 			s.Pass, s.Warn, s.Fail, s.Skip)
 		return
 	}
@@ -142,7 +142,7 @@ func (t TextWriter) renderSummary(w io.Writer, s check.Summary) {
 		fmt.Sprintf("%d %s", s.Fail, t.glyph(check.StatusFail)),
 		fmt.Sprintf("%d %s", s.Skip, t.glyph(check.StatusSkip)),
 	}
-	fmt.Fprintln(w, strings.Join(parts, t.style(" · ", ansiDim)))
+	_, _ = fmt.Fprintln(w, strings.Join(parts, t.style(" · ", ansiDim)))
 }
 
 func summarise(res check.Result) string {
