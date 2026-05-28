@@ -138,3 +138,74 @@ func (f fakeRecursiveClient) Resolve(_ context.Context, _ string, qtype uint16) 
 	}
 	return &dns.Msg{}, nil
 }
+
+type familyRestrictedClient struct {
+	fakeRecursiveClient
+	family int
+}
+
+func (f familyRestrictedClient) Family() int { return f.family }
+
+func TestResolveNameServerTargetsFilterByFamily(t *testing.T) {
+	t.Parallel()
+
+	r := familyRestrictedClient{
+		fakeRecursiveClient: fakeRecursiveClient{
+			byType: map[uint16]*dns.Msg{
+				dns.TypeA: {
+					Answer: []dns.RR{
+						&dns.A{Hdr: dns.RR_Header{Rrtype: dns.TypeA}, A: net.ParseIP("192.0.2.1")},
+					},
+				},
+				dns.TypeAAAA: {
+					Answer: []dns.RR{
+						&dns.AAAA{Hdr: dns.RR_Header{Rrtype: dns.TypeAAAA}, AAAA: net.ParseIP("2001:db8::1")},
+					},
+				},
+			},
+		},
+		family: 4,
+	}
+
+	targets, unresolved := ResolveNameServerTargets(context.Background(), r, []string{"ns1.example.com."}, nil)
+	if len(unresolved) != 0 {
+		t.Fatalf("unresolved = %v, want empty", unresolved)
+	}
+	if len(targets) != 1 || targets[0].Family != 4 || targets[0].IP.String() != "192.0.2.1" {
+		t.Fatalf("targets = %#v, want one IPv4 target", targets)
+	}
+
+	r.family = 6
+	targets, unresolved = ResolveNameServerTargets(context.Background(), r, []string{"ns1.example.com."}, nil)
+	if len(unresolved) != 0 {
+		t.Fatalf("unresolved = %v, want empty", unresolved)
+	}
+	if len(targets) != 1 || targets[0].Family != 6 || targets[0].IP.String() != "2001:db8::1" {
+		t.Fatalf("targets = %#v, want one IPv6 target", targets)
+	}
+}
+
+func TestResolveNameServerTargetsFilterMarksUnresolvedWhenNoMatch(t *testing.T) {
+	t.Parallel()
+
+	r := familyRestrictedClient{
+		fakeRecursiveClient: fakeRecursiveClient{
+			byType: map[uint16]*dns.Msg{
+				dns.TypeA: {
+					Answer: []dns.RR{
+						&dns.A{Hdr: dns.RR_Header{Rrtype: dns.TypeA}, A: net.ParseIP("192.0.2.1")},
+					},
+				},
+			},
+		},
+		family: 6,
+	}
+
+	targets, unresolved := ResolveNameServerTargets(context.Background(), r, []string{"ns1.example.com."}, nil)
+	if len(targets) != 0 {
+		t.Fatalf("targets = %#v, want empty (no IPv6)", targets)
+	}
+	if len(unresolved) != 1 || unresolved[0] != "ns1.example.com." {
+		t.Fatalf("unresolved = %v, want [ns1.example.com.]", unresolved)
+	}
+}

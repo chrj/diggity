@@ -36,10 +36,22 @@ func AuthoritativeNSHosts(ctx context.Context, r resolver.RecursiveQuerier, zone
 	return hosts, nil
 }
 
+// familyAware is implemented by resolvers that are restricted to a single
+// IP address family. ResolveNameServerTargets uses it to drop unreachable
+// targets before any query is sent.
+type familyAware interface {
+	Family() int
+}
+
 // ResolveNameServerTargets resolves NS hostnames to concrete server targets,
 // preferring glue addresses when available. It returns unresolved hostnames
-// separately so callers can decide whether to warn, fail, or skip them.
+// separately so callers can decide whether to warn, fail, or skip them. If r
+// is family-restricted, targets in the other family are dropped silently.
 func ResolveNameServerTargets(ctx context.Context, r resolver.RecursiveQuerier, hosts []string, glue map[string][]net.IP) ([]NameServerTarget, []string) {
+	family := 0
+	if fa, ok := r.(familyAware); ok {
+		family = fa.Family()
+	}
 	targets := make([]NameServerTarget, 0, len(hosts))
 	var unresolved []string
 	for _, host := range hosts {
@@ -52,18 +64,26 @@ func ResolveNameServerTargets(ctx context.Context, r resolver.RecursiveQuerier, 
 			}
 			ips = resolved
 		}
+		hostHadTarget := false
 		for _, ip := range ips {
-			family := 4
+			f := 4
 			if ip.To4() == nil {
-				family = 6
+				f = 6
 			}
+			if family != 0 && f != family {
+				continue
+			}
+			hostHadTarget = true
 			targets = append(targets, NameServerTarget{
 				Host:     host,
 				IP:       ip,
 				Addr:     net.JoinHostPort(ip.String(), "53"),
-				Family:   family,
+				Family:   f,
 				FromGlue: fromGlue,
 			})
+		}
+		if !hostHadTarget && family != 0 {
+			unresolved = append(unresolved, host)
 		}
 	}
 	return targets, unresolved

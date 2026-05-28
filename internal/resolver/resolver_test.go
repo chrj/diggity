@@ -67,6 +67,44 @@ func TestNewWithResolversUsesConfiguredServers(t *testing.T) {
 	}
 }
 
+func TestNewIPv4OnlyForcesIPv4Transport(t *testing.T) {
+	t.Parallel()
+
+	r := New(Config{IPv4Only: true})
+
+	if r.Family() != 4 {
+		t.Fatalf("Family() = %d, want 4", r.Family())
+	}
+	if r.udp.Net != "udp4" || r.tcp.Net != "tcp4" {
+		t.Fatalf("transports = udp:%q tcp:%q, want udp4/tcp4", r.udp.Net, r.tcp.Net)
+	}
+}
+
+func TestNewIPv6OnlyUsesIPv6Fallbacks(t *testing.T) {
+	t.Parallel()
+
+	r := New(Config{IPv6Only: true, Resolvers: []string{"1.1.1.1", "2606:4700:4700::1111"}})
+
+	if r.Family() != 6 {
+		t.Fatalf("Family() = %d, want 6", r.Family())
+	}
+	if r.udp.Net != "udp6" || r.tcp.Net != "tcp6" {
+		t.Fatalf("transports = udp:%q tcp:%q, want udp6/tcp6", r.udp.Net, r.tcp.Net)
+	}
+	if got, want := r.Recursors(), []string{"[2606:4700:4700::1111]:53"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Recursors() = %#v, want %#v (IPv4 should be filtered)", got, want)
+	}
+}
+
+func TestFamilyDefaultsToZero(t *testing.T) {
+	t.Parallel()
+
+	r := New(Config{Resolvers: []string{"1.1.1.1"}})
+	if r.Family() != 0 {
+		t.Fatalf("Family() = %d, want 0", r.Family())
+	}
+}
+
 func TestFallbackInfoCopiesSlices(t *testing.T) {
 	t.Parallel()
 

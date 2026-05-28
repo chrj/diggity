@@ -58,6 +58,30 @@ func TestNewRootCmdRequiresHostname(t *testing.T) {
 	}
 }
 
+func TestNewRootCmdRejectsIPv4AndIPv6(t *testing.T) {
+	t.Parallel()
+
+	cmd, _ := newRootCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"-4", "-6", "example.com"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want ExitError")
+	}
+	var exitErr *check.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Execute() error = %T, want *check.ExitError", err)
+	}
+	if exitErr.Code != 3 {
+		t.Fatalf("ExitError.Code = %d, want 3", exitErr.Code)
+	}
+	if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), "mutually exclusive") {
+		t.Fatalf("ExitError.Err = %v, want 'mutually exclusive'", exitErr.Err)
+	}
+}
+
 func TestNewRootCmdVersion(t *testing.T) {
 	orig := version.Version
 	version.Version = "1.2.3"

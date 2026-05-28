@@ -13,7 +13,7 @@ import (
 	"github.com/chrj/diggity/internal/resolver"
 )
 
-// rootHint is one root nameserver's name and IPv4 address. The list is
+// rootHint is one root nameserver's name and IP address. The lists are
 // bundled at build time from https://www.internic.net/domain/named.root so
 // the iterative walk does not depend on the configured recursor finding the
 // root NS for us. Refresh per release.
@@ -22,7 +22,7 @@ type rootHint struct {
 	IP   string
 }
 
-var rootHints = []rootHint{
+var rootHintsV4 = []rootHint{
 	{"a.root-servers.net.", "198.41.0.4"},
 	{"b.root-servers.net.", "170.247.170.2"},
 	{"c.root-servers.net.", "192.33.4.12"},
@@ -36,6 +36,49 @@ var rootHints = []rootHint{
 	{"k.root-servers.net.", "193.0.14.129"},
 	{"l.root-servers.net.", "199.7.83.42"},
 	{"m.root-servers.net.", "202.12.27.33"},
+}
+
+var rootHintsV6 = []rootHint{
+	{"a.root-servers.net.", "2001:503:ba3e::2:30"},
+	{"b.root-servers.net.", "2801:1b8:10::b"},
+	{"c.root-servers.net.", "2001:500:2::c"},
+	{"d.root-servers.net.", "2001:500:2d::d"},
+	{"e.root-servers.net.", "2001:500:a8::e"},
+	{"f.root-servers.net.", "2001:500:2f::f"},
+	{"g.root-servers.net.", "2001:500:12::d0d"},
+	{"h.root-servers.net.", "2001:500:1::53"},
+	{"i.root-servers.net.", "2001:7fe::53"},
+	{"j.root-servers.net.", "2001:503:c27::2:30"},
+	{"k.root-servers.net.", "2001:7fd::1"},
+	{"l.root-servers.net.", "2001:500:9f::42"},
+	{"m.root-servers.net.", "2001:dc3::35"},
+}
+
+// familyAware is implemented by resolvers that are restricted to a single
+// IP address family.
+type familyAware interface {
+	Family() int
+}
+
+// rootHintsFor returns the hints appropriate for the resolver's family. If
+// r is dual-stack, both A and AAAA roots are concatenated — the walk tries
+// them in order and stops at the first that responds.
+func rootHintsFor(r resolver.Querier) []rootHint {
+	family := 0
+	if fa, ok := r.(familyAware); ok {
+		family = fa.Family()
+	}
+	switch family {
+	case 4:
+		return rootHintsV4
+	case 6:
+		return rootHintsV6
+	default:
+		hints := make([]rootHint, 0, len(rootHintsV4)+len(rootHintsV6))
+		hints = append(hints, rootHintsV4...)
+		hints = append(hints, rootHintsV6...)
+		return hints
+	}
 }
 
 const maxHops = 16
@@ -63,7 +106,7 @@ func Walk(ctx context.Context, r resolver.Querier, name string) []Hop {
 		addr string
 	}
 	var servers []srv
-	for _, h := range rootHints {
+	for _, h := range rootHintsFor(r) {
 		servers = append(servers, srv{name: h.Name, addr: net.JoinHostPort(h.IP, "53")})
 	}
 

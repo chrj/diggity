@@ -72,6 +72,9 @@ func newRootCmd() (*cobra.Command, *Config) {
 				fmt.Fprintln(c.OutOrStdout(), version.String())
 				return nil
 			}
+			if cfg.IPv4Only && cfg.IPv6Only {
+				return &check.ExitError{Code: 3, Err: errors.New("--ipv4 and --ipv6 are mutually exclusive")}
+			}
 			if len(args) == 0 {
 				_ = c.Help()
 				return &check.ExitError{Code: 3, Err: errors.New("at least one hostname is required")}

@@ -35,21 +35,37 @@ type Resolver struct {
 
 // Public DNS resolvers used as a safety net when the system resolver
 // returns SERVFAIL / REFUSED for DNSSEC queries (a common quirk of
-// systemd-resolved). Both 1.1.1.1 and 8.8.8.8 are DNSSEC-aware.
-var defaultFallbackResolvers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+// systemd-resolved). Both Cloudflare and Google are DNSSEC-aware.
+var (
+	defaultFallbackResolvers4 = []string{"1.1.1.1:53", "8.8.8.8:53"}
+	defaultFallbackResolvers6 = []string{"[2606:4700:4700::1111]:53", "[2001:4860:4860::8888]:53"}
+)
 
 // New returns a Resolver configured with cfg. When cfg.Resolvers is empty,
 // the system resolvers from /etc/resolv.conf are used; if those refuse
 // DNSSEC queries, the resolver transparently switches to public fallbacks.
+// When cfg.IPv4Only or cfg.IPv6Only is set, the transport and every server
+// address list is restricted to the matching address family.
 func New(cfg Config) *Resolver {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 3 * time.Second
 	}
+	udpNet, tcpNet := "udp", "tcp"
+	switch {
+	case cfg.IPv4Only:
+		udpNet, tcpNet = "udp4", "tcp4"
+	case cfg.IPv6Only:
+		udpNet, tcpNet = "udp6", "tcp6"
+	}
+	fallbackList := defaultFallbackResolvers4
+	if cfg.IPv6Only {
+		fallbackList = defaultFallbackResolvers6
+	}
 	r := &Resolver{
 		cfg:          cfg,
-		udp:          &dns.Client{Net: "udp", Timeout: cfg.Timeout},
-		tcp:          &dns.Client{Net: "tcp", Timeout: cfg.Timeout},
-		fallbackList: defaultFallbackResolvers,
+		udp:          &dns.Client{Net: udpNet, Timeout: cfg.Timeout},
+		tcp:          &dns.Client{Net: tcpNet, Timeout: cfg.Timeout},
+		fallbackList: fallbackList,
 	}
 
 	if len(cfg.Resolvers) > 0 {
@@ -57,6 +73,7 @@ func New(cfg Config) *Resolver {
 		for _, addr := range cfg.Resolvers {
 			r.recursors = append(r.recursors, ensurePort(addr))
 		}
+		r.recursors = filterByFamily(r.recursors, cfg)
 		return r
 	}
 
@@ -68,11 +85,57 @@ func New(cfg Config) *Resolver {
 		for _, s := range cc.Servers {
 			r.recursors = append(r.recursors, net.JoinHostPort(s, port))
 		}
-		return r
+		r.recursors = filterByFamily(r.recursors, cfg)
+		if len(r.recursors) > 0 {
+			return r
+		}
 	}
 
 	r.recursors = r.fallbackList
 	return r
+}
+
+// Family returns 4 or 6 if the resolver is restricted to a single address
+// family, or 0 if both families are allowed.
+func (r *Resolver) Family() int {
+	switch {
+	case r.cfg.IPv4Only:
+		return 4
+	case r.cfg.IPv6Only:
+		return 6
+	default:
+		return 0
+	}
+}
+
+// filterByFamily keeps only addresses whose host part matches the family
+// selected by cfg. Hostnames (non-IP) are kept as-is; the OS resolver will
+// pick a matching A or AAAA at dial time anyway, and the family-restricted
+// dns.Client will refuse the wrong one.
+func filterByFamily(addrs []string, cfg Config) []string {
+	if !cfg.IPv4Only && !cfg.IPv6Only {
+		return addrs
+	}
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			out = append(out, addr)
+			continue
+		}
+		isV4 := ip.To4() != nil
+		if cfg.IPv4Only && isV4 {
+			out = append(out, addr)
+		}
+		if cfg.IPv6Only && !isV4 {
+			out = append(out, addr)
+		}
+	}
+	return out
 }
 
 // Recursors returns the recursive resolvers in use.
