@@ -69,7 +69,7 @@ func newRootCmd() (*cobra.Command, *Config) {
 		SilenceErrors: true,
 		RunE: func(c *cobra.Command, args []string) error {
 			if cfg.ShowVersion {
-				fmt.Fprintln(c.OutOrStdout(), version.String())
+				_, _ = fmt.Fprintln(c.OutOrStdout(), version.String())
 				return nil
 			}
 			if cfg.IPv4Only && cfg.IPv6Only {

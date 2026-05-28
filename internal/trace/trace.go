@@ -198,29 +198,29 @@ func Walk(ctx context.Context, r resolver.Querier, name string) []Hop {
 
 // Render writes a human-readable trace of hops to w, prefaced by name.
 func Render(w io.Writer, name string, hops []Hop) {
-	fmt.Fprintf(w, "iterative walk for %s:\n", dnsutil.TrimDot(dns.Fqdn(name)))
+	_, _ = fmt.Fprintf(w, "iterative walk for %s:\n", dnsutil.TrimDot(dns.Fqdn(name)))
 	for i, h := range hops {
 		num := fmt.Sprintf("%2d", i+1)
 		if h.Err != nil {
-			fmt.Fprintf(w, "  %s. unreachable: %v\n", num, h.Err)
+			_, _ = fmt.Fprintf(w, "  %s. unreachable: %v\n", num, h.Err)
 			continue
 		}
 		aa := ""
 		if h.Authoritative {
 			aa = "  AA"
 		}
-		fmt.Fprintf(w, "  %s. @%s (%s)  rcode=%s%s\n", num, dnsutil.TrimDot(h.ServerName), h.ServerAddr, dns.RcodeToString[h.Rcode], aa)
+		_, _ = fmt.Fprintf(w, "  %s. @%s (%s)  rcode=%s%s\n", num, dnsutil.TrimDot(h.ServerName), h.ServerAddr, dns.RcodeToString[h.Rcode], aa)
 		if h.Referral != "" && !h.Authoritative {
-			fmt.Fprintf(w, "        referral to %s:\n", dnsutil.TrimDot(h.Referral))
+			_, _ = fmt.Fprintf(w, "        referral to %s:\n", dnsutil.TrimDot(h.Referral))
 		} else if h.Authoritative && len(h.NS) > 0 {
-			fmt.Fprintf(w, "        NS %s:\n", dnsutil.TrimDot(h.Referral))
+			_, _ = fmt.Fprintf(w, "        NS %s:\n", dnsutil.TrimDot(h.Referral))
 		}
 		for _, ns := range h.NS {
-			fmt.Fprintf(w, "          - %s\n", dnsutil.TrimDot(ns))
+			_, _ = fmt.Fprintf(w, "          - %s\n", dnsutil.TrimDot(ns))
 		}
 		for _, g := range h.Glue {
-			fmt.Fprintf(w, "          + %s\n", g)
+			_, _ = fmt.Fprintf(w, "          + %s\n", g)
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
