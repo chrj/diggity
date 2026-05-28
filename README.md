@@ -3,13 +3,13 @@
 A focused DNS health checker for one or more hostnames.
 
 `diggity` walks the delegation chain, samples TTLs, validates the DNSSEC chain
-of trust from the root, and compares answers across authoritative servers — and
+of trust from the root, and compares answers across authoritative servers. It
 tells you what is wrong in a single pass. It is not a `dig` replacement; it is
 a verdict tool that returns **pass / warn / fail** for each check, with exit
-codes you can drop into CI.
+codes you can for example drop into CI.
 
 ```
-$ ./diggity cloudflare.com
+$ diggity cloudflare.com
 cloudflare.com
 ├─ ✓ delegation   parent and child agree on 5 NS: ns3.cloudflare.com, ns4.cloudflare.com, ns5.cloudflare.com, ns6.cloudflare.com, ns7.cloudflare.com
 ├─ ✓ ttl          5 pass
@@ -30,6 +30,123 @@ cloudflare.com
       ✓ all servers agree on AAAA cloudflare.com: 2606:4700::6810:84e5, 2606:4700::6810:85e5
 
 3 ✓ · 1 ⚠ · 0 ✗ · 0 ⊘
+diggity: 127.0.0.53 refused DNSSEC queries; used 1.1.1.1, 8.8.8.8 instead (override with -r)
+```
+
+`diggity` can also trace its path through the chain of authority by optionally
+specifying the `--trace` flag:
+
+```
+$ diggity --trace cloudflare.com
+iterative walk for cloudflare.com:
+   1. @a.root-servers.net (198.41.0.4:53)  rcode=NOERROR
+        referral to com:
+          - a.gtld-servers.net
+          - b.gtld-servers.net
+          - c.gtld-servers.net
+          - d.gtld-servers.net
+          - e.gtld-servers.net
+          - f.gtld-servers.net
+          - g.gtld-servers.net
+          - h.gtld-servers.net
+          - i.gtld-servers.net
+          - j.gtld-servers.net
+          - k.gtld-servers.net
+          - l.gtld-servers.net
+          - m.gtld-servers.net
+          + a.gtld-servers.net A 192.5.6.30
+          + a.gtld-servers.net AAAA 2001:503:a83e::2:30
+          + b.gtld-servers.net A 192.33.14.30
+          + b.gtld-servers.net AAAA 2001:503:231d::2:30
+          + c.gtld-servers.net A 192.26.92.30
+          + c.gtld-servers.net AAAA 2001:503:83eb::30
+          + d.gtld-servers.net A 192.31.80.30
+          + d.gtld-servers.net AAAA 2001:500:856e::30
+          + e.gtld-servers.net A 192.12.94.30
+          + e.gtld-servers.net AAAA 2001:502:1ca1::30
+          + f.gtld-servers.net A 192.35.51.30
+          + f.gtld-servers.net AAAA 2001:503:d414::30
+          + g.gtld-servers.net A 192.42.93.30
+          + g.gtld-servers.net AAAA 2001:503:eea3::30
+          + h.gtld-servers.net A 192.54.112.30
+          + h.gtld-servers.net AAAA 2001:502:8cc::30
+          + i.gtld-servers.net A 192.43.172.30
+          + i.gtld-servers.net AAAA 2001:503:39c1::30
+          + j.gtld-servers.net A 192.48.79.30
+          + j.gtld-servers.net AAAA 2001:502:7094::30
+          + k.gtld-servers.net A 192.52.178.30
+          + k.gtld-servers.net AAAA 2001:503:d2d::30
+          + l.gtld-servers.net A 192.41.162.30
+          + l.gtld-servers.net AAAA 2001:500:d937::30
+          + m.gtld-servers.net A 192.55.83.30
+          + m.gtld-servers.net AAAA 2001:501:b1f9::30
+   2. @l.gtld-servers.net (192.41.162.30:53)  rcode=NOERROR
+        referral to cloudflare.com:
+          - ns3.cloudflare.com
+          - ns4.cloudflare.com
+          - ns5.cloudflare.com
+          - ns6.cloudflare.com
+          - ns7.cloudflare.com
+          + ns3.cloudflare.com A 162.159.0.33
+          + ns3.cloudflare.com A 162.159.7.226
+          + ns3.cloudflare.com AAAA 2400:cb00:2049:1::a29f:21
+          + ns3.cloudflare.com AAAA 2400:cb00:2049:1::a29f:7e2
+          + ns4.cloudflare.com A 162.159.1.33
+          + ns4.cloudflare.com A 162.159.8.55
+          + ns4.cloudflare.com AAAA 2400:cb00:2049:1::a29f:121
+          + ns4.cloudflare.com AAAA 2400:cb00:2049:1::a29f:837
+          + ns5.cloudflare.com A 162.159.2.9
+          + ns5.cloudflare.com A 162.159.9.55
+          + ns5.cloudflare.com AAAA 2400:cb00:2049:1::a29f:209
+          + ns5.cloudflare.com AAAA 2400:cb00:2049:1::a29f:937
+          + ns6.cloudflare.com A 162.159.3.11
+          + ns6.cloudflare.com A 162.159.5.6
+          + ns6.cloudflare.com AAAA 2400:cb00:2049:1::a29f:30b
+          + ns6.cloudflare.com AAAA 2400:cb00:2049:1::a29f:506
+          + ns7.cloudflare.com A 162.159.4.8
+          + ns7.cloudflare.com A 162.159.6.6
+          + ns7.cloudflare.com AAAA 2400:cb00:2049:1::a29f:408
+          + ns7.cloudflare.com AAAA 2400:cb00:2049:1::a29f:606
+   3. @ns3.cloudflare.com (162.159.0.33:53)  rcode=NOERROR  AA
+        NS cloudflare.com:
+          - ns3.cloudflare.com
+          - ns4.cloudflare.com
+          - ns5.cloudflare.com
+          - ns6.cloudflare.com
+          - ns7.cloudflare.com
+          + ns3.cloudflare.com A 162.159.0.33
+          + ns3.cloudflare.com A 162.159.7.226
+          + ns3.cloudflare.com AAAA 2400:cb00:2049:1::a29f:21
+          + ns3.cloudflare.com AAAA 2400:cb00:2049:1::a29f:7e2
+          + ns4.cloudflare.com A 162.159.1.33
+          + ns4.cloudflare.com A 162.159.8.55
+          + ns4.cloudflare.com AAAA 2400:cb00:2049:1::a29f:121
+          + ns4.cloudflare.com AAAA 2400:cb00:2049:1::a29f:837
+          + ns6.cloudflare.com AAAA 2400:cb00:2049:1::a29f:30b
+          + ns6.cloudflare.com AAAA 2400:cb00:2049:1::a29f:506
+          + ns7.cloudflare.com AAAA 2400:cb00:2049:1::a29f:408
+          + ns7.cloudflare.com AAAA 2400:cb00:2049:1::a29f:606
+
+cloudflare.com
+├─ ✓ delegation   parent and child agree on 5 NS: ns3.cloudflare.com, ns4.cloudflare.com, ns5.cloudflare.com, ns6.cloudflare.com, ns7.cloudflare.com
+├─ ⚠ ttl          4 pass, 1 warn
+│     ✓ SOA TTL 4m59s
+│     ✓ NS TTL 1h39m58s
+│     ✓ A TTL 2m36s
+│     ✓ AAAA TTL 1m54s
+│     ⚠ MX TTL 25s below ttl-min 1m0s
+├─ ⚠ dnssec       3 pass, 1 warn
+│     ✓ . root DNSKEY matches bundled trust anchor (key tag 20326)
+│     ✓ com DS at parent matches DNSKEY (key tag 19718)
+│     ✓ cloudflare.com DS at parent matches DNSKEY (key tag 2371)
+│     ⚠ cloudflare.com SOA RRSIG expires in 25h0m0s (at 2026-05-29T12:06:02Z)
+└─ ✓ consistency  4 pass
+      ✓ all servers agree on SOA serial: 2405012788
+      ✓ all servers agree on NS cloudflare.com: ns3.cloudflare.com., ns4.cloudflare.com., ns5.cloudflare.com., ns6.cloudflare.com., ns7.cloudflare.com.
+      ✓ all servers agree on A cloudflare.com: 104.16.132.229, 104.16.133.229
+      ✓ all servers agree on AAAA cloudflare.com: 2606:4700::6810:84e5, 2606:4700::6810:85e5
+
+2 ✓ · 2 ⚠ · 0 ✗ · 0 ⊘
 diggity: 127.0.0.53 refused DNSSEC queries; used 1.1.1.1, 8.8.8.8 instead (override with -r)
 ```
 
