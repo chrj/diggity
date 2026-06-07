@@ -1,6 +1,6 @@
 module github.com/chrj/diggity
 
-go 1.24
+go 1.24.0
 
 toolchain go1.26.4
 
