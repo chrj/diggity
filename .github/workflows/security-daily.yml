@@ -18,7 +18,7 @@ jobs:
     env:
       # Match the toolchain in go.mod so the `@latest` tool install is built
       # with the same Go frontend used to analyze the module's stdlib.
-      GOTOOLCHAIN: go1.26.4
+      GOTOOLCHAIN: go1.26.5
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: false
 
       - name: Run govulncheck
@@ -57,7 +57,7 @@ jobs:
     env:
       # Match the toolchain in go.mod so the `@latest` tool install is built
       # with the same Go frontend used to analyze the module's stdlib.
-      GOTOOLCHAIN: go1.26.4
+      GOTOOLCHAIN: go1.26.5
 
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +65,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: false
 
       - name: Run gosec
