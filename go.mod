@@ -2,7 +2,7 @@ module github.com/chrj/diggity
 
 go 1.25.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/mattn/go-isatty v0.0.24
