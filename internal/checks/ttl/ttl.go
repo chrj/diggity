@@ -3,7 +3,7 @@ package ttl
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -134,7 +134,7 @@ func uniqueSorted(ttls []uint32) []uint32 {
 		seen[t] = struct{}{}
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -147,10 +147,8 @@ func formatTTLs(ttls []uint32) string {
 }
 
 func appendUnique(list []uint16, qt uint16) []uint16 {
-	for _, x := range list {
-		if x == qt {
-			return list
-		}
+	if slices.Contains(list, qt) {
+		return list
 	}
 	return append(list, qt)
 }
