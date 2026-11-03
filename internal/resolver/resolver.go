@@ -223,13 +223,10 @@ func (r *Resolver) exchange(ctx context.Context, server, name string, qtype uint
 		client = r.tcp
 	}
 
-	attempts := r.cfg.Retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
+	attempts := max(r.cfg.Retries+1, 1)
 
 	var lastErr error
-	for i := 0; i < attempts; i++ {
+	for range attempts {
 		msg, _, err := client.ExchangeContext(ctx, m, server)
 		if err != nil {
 			lastErr = err
