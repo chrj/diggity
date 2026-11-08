@@ -1,6 +1,7 @@
 package consistency
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -83,5 +84,74 @@ func TestDisplayHelpersAndSplit(t *testing.T) {
 	}, func(s snapshot) string { return s.a })
 	if !ok || v4 != "192.0.2.1" || v6 != "2001:db8::1" {
 		t.Fatalf("v4v6Split() = (%q, %q, %v)", v4, v6, ok)
+	}
+}
+
+// fakeZone answers for a zone example.com. with the NS hosts in ns. A host
+// without an entry in addrs has no A record. Each server gives the same
+// authoritative answers.
+type fakeZone struct {
+	ns    []string
+	addrs map[string]string
+}
+
+func (f fakeZone) Resolve(_ context.Context, name string, qtype uint16) (*dns.Msg, error) {
+	msg := &dns.Msg{}
+	switch qtype {
+	case dns.TypeSOA:
+		msg.Answer = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeSOA}, Serial: 1}}
+	case dns.TypeNS:
+		for _, h := range f.ns {
+			msg.Answer = append(msg.Answer, &dns.NS{Hdr: dns.RR_Header{Rrtype: dns.TypeNS}, Ns: h})
+		}
+	case dns.TypeA:
+		if ip, ok := f.addrs[dns.Fqdn(name)]; ok {
+			msg.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Rrtype: dns.TypeA}, A: net.ParseIP(ip)}}
+		}
+	}
+	return msg, nil
+}
+
+func (f fakeZone) Query(ctx context.Context, _, name string, qtype uint16) (*dns.Msg, error) {
+	msg, err := f.Resolve(ctx, name, qtype)
+	if err != nil {
+		return nil, err
+	}
+	msg.Authoritative = true
+	if qtype == dns.TypeA && dns.Fqdn(name) == "www.example.com." {
+		msg.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Rrtype: dns.TypeA}, A: net.ParseIP("192.0.2.80")}}
+	}
+	return msg, nil
+}
+
+func (f fakeZone) QueryTCP(ctx context.Context, server, name string, qtype uint16) (*dns.Msg, error) {
+	return f.Query(ctx, server, name, qtype)
+}
+
+func TestRunWarnsAboutUnresolvedNameServers(t *testing.T) {
+	t.Parallel()
+
+	r := fakeZone{
+		ns: []string{"ns1.example.com.", "ns2.example.com.", "ns3.example.com."},
+		addrs: map[string]string{
+			"ns1.example.com.": "192.0.2.1",
+			"ns2.example.com.": "192.0.2.2",
+		},
+	}
+
+	res := Run(context.Background(), r, "www.example.com")
+
+	if res.Status != check.StatusWarn {
+		t.Fatalf("Status = %q, want %q; findings: %#v", res.Status, check.StatusWarn, res.Findings)
+	}
+	want := "NS ns3.example.com excluded from comparison: no A/AAAA record that can be used"
+	var found bool
+	for _, f := range res.Findings {
+		if f.Status == check.StatusWarn && f.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings = %#v, want a warning %q", res.Findings, want)
 	}
 }

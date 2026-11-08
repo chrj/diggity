@@ -34,9 +34,15 @@ func Run(ctx context.Context, r resolver.Querier, hostname string) check.Result 
 	if len(nsHosts) < 2 {
 		return check.Skip(Name, hostname, fmt.Sprintf("only %d NS authoritative for %s — nothing to compare", len(nsHosts), dnsutil.TrimDot(zone)))
 	}
-	targets, _ := dnsutil.ResolveNameServerTargets(ctx, r, nsHosts, nil)
+	targets, unresolved := dnsutil.ResolveNameServerTargets(ctx, r, nsHosts, nil)
 
 	var findings []check.Finding
+	for _, ns := range unresolved {
+		findings = append(findings, check.Finding{
+			Status:  check.StatusWarn,
+			Message: fmt.Sprintf("NS %s excluded from comparison: no A/AAAA record that can be used", dnsutil.TrimDot(ns)),
+		})
+	}
 	snapshots := map[string]snapshot{}
 	for _, t := range targets {
 		label := fmt.Sprintf("%s/%s", dnsutil.TrimDot(t.Host), t.IP)
